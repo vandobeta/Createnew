@@ -1,0 +1,142 @@
+================================================================================
+          PROTRADER - DERIV DIGIT ANALYSIS APPLICATION ARCHITECTURAL PLAN
+================================================================================
+
+This document outlines the system architecture, design specifications, algorithms, 
+and implementation timeline for the "ProTrader · Deriv Digit Analysis" application.
+The design strict adheres to the visual guidelines and vocabulary presented in the PDF 
+screenshots, relying entirely on factual, client-side, and WebSocket-driven data processing.
+
+--------------------------------------------------------------------------------
+1. VOCABULARY & VISUAL DESIGN (PDF REFERENCE alignment)
+--------------------------------------------------------------------------------
+All UI components, labels, and features are matched directly with the PDF screens:
+- Title Panel: "ProTrader · Deriv Digit Analysis"
+- Parameters Form:
+  - "SYMBOL" (dropdown menu representing official Deriv Volatility index symbols):
+    * Volatility 10 Index (Code: "R_10")
+    * Volatility 10 (1s) Index (Code: "1HZ10V")
+    * Volatility 15 Index (Code: "R_15")
+    * Volatility 15 (1s) Index (Code: "1HZ15V")
+    * Volatility 75 Index (Code: "R_75")
+    * Volatility 75 (1s) Index (Code: "1HZ75V")
+    * Volatility 100 Index (Code: "R_100", default)
+    * Volatility 100 (1s) Index (Code: "1HZ100V")
+  - "SAMPLE SIZE (TICKS)" (dropdown/selector, default 50)
+  - "OVER / UNDER BARRIER: 5" (slider or selector)
+  - "ENTRY TIMER" (toggle "ON" with time frequency e.g., "15s")
+- Live Tickers Card:
+  - Displays symbols like "R_100 · LIVE ▲" (or ▼ based on tick movement)
+  - Bold, prominent display of the active tick (e.g., "359.85")
+  - "Last digit" display with custom highlight color (e.g., "5")
+  - Human-readable timestamp (e.g., "23:45:22")
+- "NEXT ENTRY WINDOW running" card:
+  - Real-time countdown timer (e.g., "9 sec")
+  - Subtext: "Place your contract at the start of each cycle to align with the signal."
+- "TOP SIGNALS" indicators:
+  - "DIFFERS" signal with percentage (e.g., "5", "96.0%")
+  - "MATCHES" signal with percentage (e.g., "7", "20.0%")
+- Statistical Plots & Feeds:
+  - "DIGIT FREQUENCY" distribution bar with percentages and highlighting for "Most frequent" and "Least frequent"
+  - "CURRENT STREAKS" table (PARITY, BARRIER, DIRECTION, SAME DIGIT) with active row counts
+  - "OVER / UNDER" ratio breakdown card
+  - "EVEN / ODD" distribution card
+  - "LIVE TICK FEED" grid with last 40 ticks (newest first) highlighting each last-digit and price
+
+--------------------------------------------------------------------------------
+2. LIVE WEBSOCKET SUBSCRIBER ENGINE
+--------------------------------------------------------------------------------
+The application will establish a persistent connection to Deriv's official production/test 
+WebSocket server to stream ticks in real time without any mock data or database simulations.
+
+- Correct Endpoint: wss://ws.derivws.com/websockets/v3?app_id=1089 (Confirmed official connection url)
+- Subscription requests:
+  - Subscription payload:
+    {
+      "ticks": "R_100",
+      "subscribe": 1
+    }
+- Ping Protocol & Latency Tracking:
+  - Periodic heartbeat messages are sent (every 10 seconds):
+    {
+      "ping": 1
+    }
+  - Latency is calculated between the send timestamp and execution timestamp of the matching response.
+  - Connection indicator color-coding system:
+    - BLUE (-best-): Latency < 100 ms
+    - GREEN (-fair-): Latency 100 ms to 250 ms
+    - ORANGE (-poor-): Latency 250 ms to 500 ms
+    - RED (-unstable-): Latency > 500 ms or disconnected
+
+--------------------------------------------------------------------------------
+3. ALGORITHMIC ANALYSIS ENGINE (NO SIMULATIONS)
+--------------------------------------------------------------------------------
+The analytics engine listens to the live tick stream and applies four exact rules:
+
+A. Over/Under Trend Analysis
+- Base scope: Calculates conditions using precisely the last 100 ticks.
+- Determines overall trend direction, average deviation, and frequency of ticks exceeding or falling below the specified barrier (0-9 range).
+
+B. Two-Profile Comparison Matches
+- Operates on dual statistical windows concurrently:
+  - Profile A: Last 50 ticks
+  - Profile B: Last 25 ticks
+- Evaluates similarities and divergence between frequencies of the digits (0-9).
+- Produces match predictions associated with a dynamic confidence score calculated from consistency between the two windows.
+
+C. Digit Balancing Rule
+- Based on the phenomenon that over large sample sizes, digits 0-9 strive for a 10% frequency balance.
+- If a digit has been heavily underrepresented/absent for consecutive cycles, its predicted probability of appearing increases to represent the expected correction.
+- Conversely, highly overrepresented digits trigger a downward dampening adjustment on the predictor.
+
+D. Repeating Sequence Pattern Predictor
+- Uses a local rolling sequence database storing exactly the last 1000 tick patterns for the currently selected symbol.
+- Every new live tick appends to this persistent local storage, and older ticks are automatically pruned to guarantee that the database size is kept strictly at 1000 ticks.
+- When a 4-digit sequence (e.g., "1614") occurs from the latest live ticks, the pattern engine queries the 1000-tick historical database to scan for previous occurrences of this prefix context (e.g., identifying when "1614" emerged in the past and was followed by "1", then "3", then "7").
+- If a match is found within this historical sliding window, the engine projects the future succession sequence predictions ("1", then "3", then "7") for visual exact match entries, assigning higher priority/confidence score to these outcomes in the "MATCHES" signals list.
+
+--------------------------------------------------------------------------------
+4. CORE SYSTEM PERMISSIONS & CONVENTIONS
+--------------------------------------------------------------------------------
+The application requests the following structural Android permissions:
+- android.permission.INTERNET (Essential for WebSocket streaming)
+- android.permission.ACCESS_NETWORK_STATE (To monitor connection state changes)
+- android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS (Ensures WebSocket is not closed during background/idle)
+- android.permission.SYSTEM_ALERT_WINDOW (Allows drawing over other apps if custom PiP overlays are triggered)
+
+--------------------------------------------------------------------------------
+5. PICTURE-IN-PICTURE (PiP) ARCHITECTURE
+--------------------------------------------------------------------------------
+To monitor live analytics even when exiting ProTrader, the primary screen supports standard Android Picture-in-Picture.
+- Manifest setup:
+  <activity
+      android:name=".MainActivity"
+      android:supportsPictureInPicture="true"
+      android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation">
+- Activation: Emits `enterPictureInPictureMode(PictureInPictureParams.Builder().build())` inside `onUserLeaveHint()`.
+- Layout adaptation:
+  - Automatically hides heavy visual boards (Digit Frequency chart, current streaks tables, parameters fields) during PiP mode using Compose context properties layout checking (via local configuration or size changes).
+  - Shrinks down to focus on:
+    - Current Active Symbol & Live Tick Quote (e.g., "R_100 LIVE 359.85")
+    - Last Digit Highlight
+    - TOP Predictions (Digit paths for MATCHES or DIFFERS)
+    - Ping Latency visual dot with precise color indicator (Blue, Green, Orange, Red)
+
+--------------------------------------------------------------------------------
+6. IMPLEMENTATION STEPS (Ready on Command)
+--------------------------------------------------------------------------------
+1. PROJECT INITIALIZATION & CONFIGURATION:
+   - Configure metadata.json with the title "ProTrader Digit Analyzer".
+   - Modify strings.xml to adopt full PDF nomenclature.
+   - Update AndroidManifest.xml to add permissions and declare supportsPictureInPicture for MainActivity.
+2. WEBSOCKET NETWORK LAYER:
+   - Implement OkHttp-based `DerivWebSocketManager` handling secure streaming context, heartbeat timers, and latency trackers.
+3. DATA MODELS & MATHEMATICAL PARSERS:
+   - Build lightweight, thread-safe memory buffers feeding flow state to statistical calculations for standard deviations, balances, and recurring sequence patterns.
+4. VIEWMODEL STATE LOGIC:
+   - Implement `DigitAnalysisViewModel` coordinating real-time UI state flows derived from active subscriber feeds.
+5. JETPACK COMPOSE POLISHED LAYOUT:
+   - Mirror the screens perfectly: soft borders, clean progress tracks, high-contrast text sizing, and color themes.
+6. TESTING & VERIFICATION:
+   - Add unit/integration tests to verify analytics math correctness and stream resilience.
+================================================================================

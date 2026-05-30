@@ -1,0 +1,6 @@
+{
+  "name": "ProTrader",
+  "description": "Real-time Deriv digit analysis tool. Subscribes to live WebSocket tick stream, calculates trend analysis, sequence pattern matching, and displays predictions in adaptive PIP view.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
