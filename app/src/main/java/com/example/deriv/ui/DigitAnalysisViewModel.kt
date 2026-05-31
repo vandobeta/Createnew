@@ -14,6 +14,8 @@ import com.example.deriv.analytics.DigitAnalysisEngine
 import com.example.deriv.database.AppDatabase
 import com.example.deriv.database.TickEntity
 import com.example.deriv.database.TickRepository
+import com.example.deriv.database.SettingsEntity
+import com.example.deriv.database.SettingsDao
 import com.example.deriv.websocket.ConnectionStatus
 import com.example.deriv.websocket.DerivWebSocketManager
 import com.example.deriv.websocket.LiveTick
@@ -84,6 +86,61 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
 
     private val _vibrationStrengthThreshold = MutableStateFlow(60f) // 0.0f to 100.0f, default 60%
     val vibrationStrengthThreshold: StateFlow<Float> = _vibrationStrengthThreshold.asStateFlow()
+
+    // Persistent auto clicker state
+    private val _autoClickerEnabled = MutableStateFlow(false)
+    val autoClickerEnabled: StateFlow<Boolean> = _autoClickerEnabled.asStateFlow()
+
+    // Algorithmic rules - start disabled!
+    private val _p1Enabled = MutableStateFlow(false)
+    val p1Enabled: StateFlow<Boolean> = _p1Enabled.asStateFlow()
+    
+    private val _p1TargetDigit = MutableStateFlow(6)
+    val p1TargetDigit: StateFlow<Int> = _p1TargetDigit.asStateFlow()
+    
+    private val _p1MinConfidence = MutableStateFlow(45.0)
+    val p1MinConfidence: StateFlow<Double> = _p1MinConfidence.asStateFlow()
+    
+    private val _p2Enabled = MutableStateFlow(false)
+    val p2Enabled: StateFlow<Boolean> = _p2Enabled.asStateFlow()
+    
+    private val _p2TargetDigit = MutableStateFlow(6)
+    val p2TargetDigit: StateFlow<Int> = _p2TargetDigit.asStateFlow()
+    
+    private val _p2MinConfidence = MutableStateFlow(70.0)
+    val p2MinConfidence: StateFlow<Double> = _p2MinConfidence.asStateFlow()
+    
+    private val _p3Enabled = MutableStateFlow(false)
+    val p3Enabled: StateFlow<Boolean> = _p3Enabled.asStateFlow()
+    
+    private val _p3MinFrequency = MutableStateFlow(12.0)
+    val p3MinFrequency: StateFlow<Double> = _p3MinFrequency.asStateFlow()
+    
+    private val _p3MinAbsence = MutableStateFlow(3)
+    val p3MinAbsence: StateFlow<Int> = _p3MinAbsence.asStateFlow()
+    
+    private val _p4Enabled = MutableStateFlow(false)
+    val p4Enabled: StateFlow<Boolean> = _p4Enabled.asStateFlow()
+    
+    private val _p4MinAppearances = MutableStateFlow(2)
+    val p4MinAppearances: StateFlow<Int> = _p4MinAppearances.asStateFlow()
+    
+    // Limits
+    private val _sessionSignalLimit = MutableStateFlow(10) // default 10
+    val sessionSignalLimit: StateFlow<Int> = _sessionSignalLimit.asStateFlow()
+    
+    private val _sessionSignalCount = MutableStateFlow(0)
+    val sessionSignalCount: StateFlow<Int> = _sessionSignalCount.asStateFlow()
+    
+    // Trading timer hours/minutes (Session-Based Timers, three times a day)
+    private val _timerSession1 = MutableStateFlow("08:00")
+    val timerSession1: StateFlow<String> = _timerSession1.asStateFlow()
+    
+    private val _timerSession2 = MutableStateFlow("14:00")
+    val timerSession2: StateFlow<String> = _timerSession2.asStateFlow()
+    
+    private val _timerSession3 = MutableStateFlow("20:00")
+    val timerSession3: StateFlow<String> = _timerSession3.asStateFlow()
 
     private val _geminiReportState = MutableStateFlow<GeminiAnalysisState>(GeminiAnalysisState.Idle)
     val geminiReportState: StateFlow<GeminiAnalysisState> = _geminiReportState.asStateFlow()
@@ -182,20 +239,144 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
 
     private val recentDigitsForTrigger = mutableListOf<Int>()
 
+    fun saveSettingsToDb() {
+        viewModelScope.launch {
+            try {
+                val entity = SettingsEntity(
+                    id = 1L,
+                    alertPreference = _alertPreference.value,
+                    vibrationSetting = _vibrationSetting.value,
+                    vibrationStrengthThreshold = _vibrationStrengthThreshold.value,
+                    selectedColorTheme = _selectedColorTheme.value,
+                    selectedSymbol = _selectedSymbol.value,
+                    selectedTradeType = _selectedTradeType.value.name,
+                    barrier = _barrier.value,
+                    sampleSize = _sampleSize.value,
+                    p1Enabled = _p1Enabled.value,
+                    p1TargetDigit = _p1TargetDigit.value,
+                    p1MinConfidence = _p1MinConfidence.value,
+                    p2Enabled = _p2Enabled.value,
+                    p2TargetDigit = _p2TargetDigit.value,
+                    p2MinConfidence = _p2MinConfidence.value,
+                    p3Enabled = _p3Enabled.value,
+                    p3MinFrequency = _p3MinFrequency.value,
+                    p3MinAbsence = _p3MinAbsence.value,
+                    p4Enabled = _p4Enabled.value,
+                    p4MinAppearances = _p4MinAppearances.value,
+                    sessionSignalLimit = _sessionSignalLimit.value,
+                    sessionSignalCount = _sessionSignalCount.value,
+                    timerSession1 = _timerSession1.value,
+                    timerSession2 = _timerSession2.value,
+                    timerSession3 = _timerSession3.value
+                )
+                db.settingsDao().saveSettings(entity)
+            } catch (e: Exception) {
+                android.util.Log.e("DigitAnalysisViewModel", "Error saving settings: ${e.message}")
+            }
+        }
+    }
+
+    fun setAutoClickerEnabled(enabled: Boolean) {
+        _autoClickerEnabled.value = enabled
+        saveSettingsToDb()
+    }
+
     fun setAlertPreference(pref: String) {
         _alertPreference.value = pref
+        saveSettingsToDb()
     }
 
     fun setVibrationSetting(setting: String) {
         _vibrationSetting.value = setting
+        saveSettingsToDb()
     }
 
     fun setVibrationStrengthThreshold(value: Float) {
         _vibrationStrengthThreshold.value = value
+        saveSettingsToDb()
     }
 
     fun setSelectedColorTheme(theme: String) {
         _selectedColorTheme.value = theme
+        saveSettingsToDb()
+    }
+
+    fun setP1Enabled(enabled: Boolean) {
+        _p1Enabled.value = enabled
+        saveSettingsToDb()
+    }
+    fun setP1TargetDigit(digit: Int) {
+        _p1TargetDigit.value = digit
+        saveSettingsToDb()
+    }
+    fun setP1MinConfidence(conf: Double) {
+        _p1MinConfidence.value = conf
+        saveSettingsToDb()
+    }
+    
+    fun setP2Enabled(enabled: Boolean) {
+        _p2Enabled.value = enabled
+        saveSettingsToDb()
+    }
+    fun setP2TargetDigit(digit: Int) {
+        _p2TargetDigit.value = digit
+        saveSettingsToDb()
+    }
+    fun setP2MinConfidence(conf: Double) {
+        _p2MinConfidence.value = conf
+        saveSettingsToDb()
+    }
+    
+    fun setP3Enabled(enabled: Boolean) {
+        _p3Enabled.value = enabled
+        saveSettingsToDb()
+    }
+    fun setP3MinFrequency(freq: Double) {
+        _p3MinFrequency.value = freq
+        saveSettingsToDb()
+    }
+    fun setP3MinAbsence(abs: Int) {
+        _p3MinAbsence.value = abs
+        saveSettingsToDb()
+    }
+    
+    fun setP4Enabled(enabled: Boolean) {
+        _p4Enabled.value = enabled
+        saveSettingsToDb()
+    }
+    fun setP4MinAppearances(app: Int) {
+        _p4MinAppearances.value = app
+        saveSettingsToDb()
+    }
+    
+    fun setSessionSignalLimit(limit: Int) {
+        _sessionSignalLimit.value = limit
+        saveSettingsToDb()
+    }
+    
+    fun resetSessionSignalCount() {
+        _sessionSignalCount.value = 0
+        saveSettingsToDb()
+    }
+    
+    fun incrementSessionSignalCount() {
+        _sessionSignalCount.value = _sessionSignalCount.value + 1
+        saveSettingsToDb()
+    }
+    
+    fun setTimerSession1(time: String) {
+        _timerSession1.value = time
+        saveSettingsToDb()
+    }
+    
+    fun setTimerSession2(time: String) {
+        _timerSession2.value = time
+        saveSettingsToDb()
+    }
+    
+    fun setTimerSession3(time: String) {
+        _timerSession3.value = time
+        saveSettingsToDb()
     }
 
     fun setOverUnderBias(bias: String) {
@@ -231,12 +412,14 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
     // Symbols dropdown representation list
     val symbols = listOf(
         "R_10" to "Volatility 10 Index",
-        "1HZ10V" to "Volatility 10 (1s) Index",
-        "R_15" to "Volatility 15 Index",
-        "1HZ15V" to "Volatility 15 (1s) Index",
+        "R_25" to "Volatility 25 Index",
+        "R_50" to "Volatility 50 Index",
         "R_75" to "Volatility 75 Index",
-        "1HZ75V" to "Volatility 75 (1s) Index",
         "R_100" to "Volatility 100 Index",
+        "1HZ10V" to "Volatility 10 (1s) Index",
+        "1HZ25V" to "Volatility 25 (1s) Index",
+        "1HZ50V" to "Volatility 50 (1s) Index",
+        "1HZ75V" to "Volatility 75 (1s) Index",
         "1HZ100V" to "Volatility 100 (1s) Index"
     )
 
@@ -300,12 +483,55 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
 
     // Calculated analysis state mapped reactively
     val analysisReport: StateFlow<AnalysisReport?> = combine(
-        latestTicksFlow,
-        _sampleSize,
-        _barrier
-    ) { ticks, size, bar ->
+        listOf(
+            latestTicksFlow,
+            _sampleSize,
+            _barrier,
+            _p1Enabled,
+            _p1TargetDigit,
+            _p1MinConfidence,
+            _p2Enabled,
+            _p2TargetDigit,
+            _p2MinConfidence,
+            _p3Enabled,
+            _p3MinFrequency,
+            _p3MinAbsence,
+            _p4Enabled,
+            _p4MinAppearances
+        )
+    ) { array ->
+        val ticks = array[0] as List<TickEntity>
+        val size = array[1] as Int
+        val bar = array[2] as Int
+        val p1En = array[3] as Boolean
+        val p1T = array[4] as Int
+        val p1C = array[5] as Double
+        val p2En = array[6] as Boolean
+        val p2T = array[7] as Int
+        val p2C = array[8] as Double
+        val p3En = array[9] as Boolean
+        val p3F = array[10] as Double
+        val p3A = array[11] as Int
+        val p4En = array[12] as Boolean
+        val p4Ap = array[13] as Int
+        
         try {
-            DigitAnalysisEngine.analyze(ticks, size, bar)
+            DigitAnalysisEngine.analyze(
+                ticks = ticks,
+                sampleSize = size,
+                barrier = bar,
+                p1Enabled = p1En,
+                p1TargetDigit = p1T,
+                p1MinConfidence = p1C,
+                p2Enabled = p2En,
+                p2TargetDigit = p2T,
+                p2MinConfidence = p2C,
+                p3Enabled = p3En,
+                p3MinFrequency = p3F,
+                p3MinAbsence = p3A,
+                p4Enabled = p4En,
+                p4MinAppearances = p4Ap
+            )
         } catch (e: Throwable) {
             android.util.Log.e("DigitAnalysisViewModel", "Error calculating DigitAnalysisEngine stats: ${e.message}", e)
             null
@@ -315,6 +541,61 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     init {
+        // Preload settings from DB on startup
+        viewModelScope.launch {
+            try {
+                var loadedSettings = db.settingsDao().getSettings()
+                if (loadedSettings == null) {
+                    loadedSettings = SettingsEntity()
+                    db.settingsDao().saveSettings(loadedSettings)
+                }
+                
+                _alertPreference.value = loadedSettings.alertPreference
+                _vibrationSetting.value = loadedSettings.vibrationSetting
+                _vibrationStrengthThreshold.value = loadedSettings.vibrationStrengthThreshold
+                _selectedColorTheme.value = loadedSettings.selectedColorTheme
+                _selectedSymbol.value = loadedSettings.selectedSymbol
+                _selectedTradeType.value = TradeType.valueOf(loadedSettings.selectedTradeType)
+                _barrier.value = loadedSettings.barrier
+                _sampleSize.value = loadedSettings.sampleSize
+                
+                _p1Enabled.value = loadedSettings.p1Enabled
+                _p1TargetDigit.value = loadedSettings.p1TargetDigit
+                _p1MinConfidence.value = loadedSettings.p1MinConfidence
+                
+                _p2Enabled.value = loadedSettings.p2Enabled
+                _p2TargetDigit.value = loadedSettings.p2TargetDigit
+                _p2MinConfidence.value = loadedSettings.p2MinConfidence
+                
+                _p3Enabled.value = loadedSettings.p3Enabled
+                _p3MinFrequency.value = loadedSettings.p3MinFrequency
+                _p3MinAbsence.value = loadedSettings.p3MinAbsence
+                
+                _p4Enabled.value = loadedSettings.p4Enabled
+                _p4MinAppearances.value = loadedSettings.p4MinAppearances
+                
+                _sessionSignalLimit.value = loadedSettings.sessionSignalLimit
+                _sessionSignalCount.value = loadedSettings.sessionSignalCount
+                
+                _timerSession1.value = loadedSettings.timerSession1
+                _timerSession2.value = loadedSettings.timerSession2
+                _timerSession3.value = loadedSettings.timerSession3
+
+                // After loading settings, update subscription symbol & reload initial ticks
+                socketManager.subscribeToSymbol(loadedSettings.selectedSymbol)
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        val initialTicks = repository.getLatest1000Ticks(loadedSettings.selectedSymbol)
+                        _latestTicksFlow.value = initialTicks
+                    } catch (e: Exception) {
+                        android.util.Log.e("DigitAnalysisViewModel", "Failed to pre-load initial ticks: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("DigitAnalysisViewModel", "Failed to load settings on init: ${e.message}")
+            }
+        }
+
         try {
             createNotificationChannel()
         } catch (e: Throwable) {
@@ -413,18 +694,22 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
         }
         
         socketManager.subscribeToSymbol(symbolCode)
+        saveSettingsToDb()
     }
 
     fun selectTradeType(type: TradeType) {
         _selectedTradeType.value = type
+        saveSettingsToDb()
     }
 
     fun selectSampleSize(size: Int) {
         _sampleSize.value = size
+        saveSettingsToDb()
     }
 
     fun selectBarrier(bar: Int) {
         _barrier.value = bar
+        saveSettingsToDb()
     }
 
     fun toggleEntryTimer(enabled: Boolean) {
@@ -497,6 +782,28 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun notifySignalConfirmed(signalName: String) {
+        val count = _sessionSignalCount.value
+        val limit = _sessionSignalLimit.value
+        
+        // Check if count has already reached / exceeded limit
+        if (limit != -1 && count >= limit) {
+            _autoClickerEnabled.value = false
+            saveSettingsToDb()
+            addStrategyLog("⚠️ Suppressed: Session Limit reached ($limit signals). Disengaging auto-clicker.")
+            return
+        }
+        
+        // Increment and save settings
+        _sessionSignalCount.value = count + 1
+        saveSettingsToDb()
+
+        // If the new count reaches the limit, proactively turn off auto-clicking for future runs
+        if (limit != -1 && _sessionSignalCount.value >= limit) {
+            _autoClickerEnabled.value = false
+            saveSettingsToDb()
+            addStrategyLog("🏁 Limit Met: Session completed ($limit signals). Auto-clicker disengaged.")
+        }
+
         viewModelScope.launch {
             _signalConfirmedFlow.emit(signalName)
         }

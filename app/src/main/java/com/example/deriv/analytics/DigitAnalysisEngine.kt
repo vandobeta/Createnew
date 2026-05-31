@@ -49,7 +49,18 @@ object DigitAnalysisEngine {
     fun analyze(
         ticks: List<TickEntity>,
         sampleSize: Int,
-        barrier: Int
+        barrier: Int,
+        p1Enabled: Boolean,
+        p1TargetDigit: Int,
+        p1MinConfidence: Double,
+        p2Enabled: Boolean,
+        p2TargetDigit: Int,
+        p2MinConfidence: Double,
+        p3Enabled: Boolean,
+        p3MinFrequency: Double,
+        p3MinAbsence: Int,
+        p4Enabled: Boolean,
+        p4MinAppearances: Int
     ): AnalysisReport? {
         if (ticks.isEmpty()) return null
 
@@ -101,21 +112,21 @@ object DigitAnalysisEngine {
         val leastFrequentDigit1000 = frequency1000.minByOrNull { it.value }?.key ?: 0
         val mostFrequentDigit1000 = frequency1000.maxByOrNull { it.value }?.key ?: 9
 
-        // Pure Prediction (P1) on Digit 6 specifically
-        val freq6A = freqA[6] ?: 10.0
-        val freq6B = freqB[6] ?: 10.0
-        val balancingBoost6 = if (6 == leastFrequentDigit1000) 25.0 else 0.0
-        val p1Confidence = (freq6A + freq6B + balancingBoost6).coerceIn(45.0, 98.5)
+        // Pure Prediction (P1) on targeting digit specifically
+        val freqA_target = freqA[p1TargetDigit] ?: 10.0
+        val freqB_target = freqB[p1TargetDigit] ?: 10.0
+        val balancingBoost = if (p1TargetDigit == leastFrequentDigit1000) 25.0 else 0.0
+        val p1Confidence = (freqA_target + freqB_target + balancingBoost).coerceIn(45.0, 98.5)
 
-        // Top matches stats for compatibility mapping (pointing to Digit 6)
-        val bestMatchesDigit = 6
-        val confidenceScore = p1Confidence
+        // Top matches stats for compatibility mapping (pointing to targeting digit)
+        val bestMatchesDigit = if (p1Enabled) p1TargetDigit else if (p2Enabled) p2TargetDigit else 6
+        val confidenceScore = if (p1Enabled) p1Confidence else 70.0
 
         // Top Differing digit (typically the highly saturated or overdeveloped digits)
         val topDiffersDigit = mostFrequentDigit1000
         val topDiffersPct = (99.0 - (digitFrequencies[topDiffersDigit] ?: 10.0)).coerceIn(80.0, 99.5)
 
-        // 7. REPEATING SEQUENCE PATTERN PREDICTOR pointing to Digit 6 (P2)
+        // 7. REPEATING SEQUENCE PATTERN PREDICTOR pointing to Digit target (P2)
         var p2Confidence = 0.0
         var p2Description = ""
         val history = ticks.map { it.digit }.reversed()
@@ -125,17 +136,17 @@ object DigitAnalysisEngine {
             for (i in 0 until (history.size - 4)) {
                 if (history[i] == current3[0] && history[i+1] == current3[1] && history[i+2] == current3[2]) {
                     val nextDigit = history[i+3]
-                    if (nextDigit == 6) {
+                    if (nextDigit == p2TargetDigit) {
                         patternMatchCount++
                     }
                 }
             }
             if (patternMatchCount > 0) {
                 p2Confidence = (70.0 + patternMatchCount * 6.0).coerceAtLeast(82.0).coerceAtMost(98.5)
-                p2Description = "Sequence pattern matched in history (${current3.joinToString("")} -> 6) recommending entry on Digit 6 ($patternMatchCount match instances)."
+                p2Description = "Sequence pattern matched in history (${current3.joinToString("")} -> $p2TargetDigit) recommending entry on Digit $p2TargetDigit ($patternMatchCount match instances)."
             } else {
                 p2Confidence = 74.5
-                p2Description = "Awaiting pattern trigger matching current sequence [${current3.joinToString("")}] to point to Digit 6."
+                p2Description = "Awaiting pattern trigger matching current sequence [${current3.joinToString("")}] to point to Digit $p2TargetDigit."
             }
         } else {
             p2Confidence = 60.0
@@ -160,76 +171,82 @@ object DigitAnalysisEngine {
 
         val consolidated = mutableListOf<ConsolidatedPrediction>()
         
-        // P1 Branch (Pure Prediction on Digit 6)
-        consolidated.add(
-            ConsolidatedPrediction(
-                digit = 6,
-                type = "P1",
-                displayName = "P1 (Pure Prediction)",
-                confidence = p1Confidence,
-                description = "Master predictive signal targeting Digit 6 based on dual-profile balancing models."
+        // P1 Branch (Pure Prediction on Digit target)
+        if (p1Enabled && p1Confidence >= p1MinConfidence) {
+            consolidated.add(
+                ConsolidatedPrediction(
+                    digit = p1TargetDigit,
+                    type = "P1",
+                    displayName = "P1 (Pure Prediction)",
+                    confidence = p1Confidence,
+                    description = "Master predictive signal targeting Digit $p1TargetDigit based on dual-profile balancing models."
+                )
             )
-        )
+        }
 
-        // P2 Branch (Pattern Matching pointing to Digit 6)
-        consolidated.add(
-            ConsolidatedPrediction(
-                digit = 6,
-                type = "P2",
-                displayName = "P2 (Pattern Match)",
-                confidence = p2Confidence,
-                description = p2Description
+        // P2 Branch (Pattern Matching pointing to target)
+        if (p2Enabled && p2Confidence >= p2MinConfidence) {
+            consolidated.add(
+                ConsolidatedPrediction(
+                    digit = p2TargetDigit,
+                    type = "P2",
+                    displayName = "P2 (Pattern Match)",
+                    confidence = p2Confidence,
+                    description = p2Description
+                )
             )
-        )
+        }
 
         // P3 (Most Appearing Prediction Model)
-        // Only if it's at 12+% and it misses appearing for 3 or more ticks. Discard if > 8 ticks.
-        val mostFrequentRecent = digitFrequencies.maxByOrNull { it.value }
-        if (mostFrequentRecent != null) {
-            val freqPct = mostFrequentRecent.value
-            val digit = mostFrequentRecent.key
-            if (freqPct >= 12.0) {
-                var absenceCount = 0
-                for (t in ticks) {
-                    if (t.digit == digit) {
-                        break
+        if (p3Enabled) {
+            val mostFrequentRecent = digitFrequencies.maxByOrNull { it.value }
+            if (mostFrequentRecent != null) {
+                val freqPct = mostFrequentRecent.value
+                val digit = mostFrequentRecent.key
+                if (freqPct >= p3MinFrequency) {
+                    var absenceCount = 0
+                    for (t in ticks) {
+                        if (t.digit == digit) {
+                            break
+                        }
+                        absenceCount++
                     }
-                    absenceCount++
-                }
-                
-                if (absenceCount in 3..8) {
-                    val p3Conf = (68.0 + (absenceCount - 3) * 4.5).coerceIn(68.0, 96.0)
-                    consolidated.add(
-                        ConsolidatedPrediction(
-                            digit = digit,
-                            type = "P3",
-                            displayName = "P3 (Most Appearing)",
-                            confidence = p3Conf,
-                            description = "Most frequent Digit $digit (Freq: ${String.format("%.1f", freqPct)}%) absent for $absenceCount ticks (Ideal: 3-8). Correction signal high!"
+                    
+                    if (absenceCount >= p3MinAbsence && absenceCount <= 8) {
+                        val p3Conf = (68.0 + (absenceCount - p3MinAbsence) * 4.5).coerceIn(68.0, 96.0)
+                        consolidated.add(
+                            ConsolidatedPrediction(
+                                digit = digit,
+                                type = "P3",
+                                displayName = "P3 (Most Appearing)",
+                                confidence = p3Conf,
+                                description = "Most frequent Digit $digit (Freq: ${String.format("%.1f", freqPct)}%) absent for $absenceCount ticks (Min: $p3MinAbsence). Correction signal high!"
+                            )
                         )
-                    )
+                    }
                 }
             }
         }
 
         // P4 (Least Appearing Gaining Momentum Model)
-        // Detects if the suppressed/least frequent digit begins to gain momentum in the last 8 ticks
-        val leastFrequentRecent = digitFrequencies.minByOrNull { it.value }
-        if (leastFrequentRecent != null) {
-            val digit = leastFrequentRecent.key
-            val last8 = ticks.take(8)
-            val appearancesInLast8 = last8.count { it.digit == digit }
-            if (appearancesInLast8 >= 2) {
-                val p4Conf = (65.0 + appearancesInLast8 * 6.5).coerceIn(65.0, 92.0)
-                consolidated.add(
-                    ConsolidatedPrediction(
-                        digit = digit,
-                        type = "P4",
-                        displayName = "P4 (Momentum)",
-                        confidence = p4Conf,
-                        description = "Suppressed Digit $digit is recovering value with $appearancesInLast8 occurrences in the last 8 ticks."
+        if (p4Enabled) {
+            val leastFrequentRecent = digitFrequencies.minByOrNull { it.value }
+            if (leastFrequentRecent != null) {
+                val digit = leastFrequentRecent.key
+                val last8 = ticks.take(8)
+                val appearancesInLast8 = last8.count { it.digit == digit }
+                if (appearancesInLast8 >= p4MinAppearances) {
+                    val p4Conf = (65.0 + appearancesInLast8 * 6.5).coerceIn(65.0, 92.0)
+                    consolidated.add(
+                        ConsolidatedPrediction(
+                            digit = digit,
+                            type = "P4",
+                            displayName = "P4 (Momentum)",
+                            confidence = p4Conf,
+                            description = "Suppressed Digit $digit is recovering value with $appearancesInLast8 occurrences in the last 8 ticks."
+                        )
                     )
-                )
+                }
             }
         }
 

@@ -15,6 +15,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
@@ -35,6 +38,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.scale
 import androidx.compose.material3.*
@@ -114,7 +118,7 @@ fun MainScreen(
     var showSettingsState by remember { mutableStateOf(false) }
 
     // --- AUTO-CLICKER FLOATING ACCESSIBILITY BUTTON STATES ---
-    var autoClickerEnabled by remember { mutableStateOf(false) }
+    val autoClickerEnabled by viewModel.autoClickerEnabled.collectAsState()
     var showAccessibilityDialog by remember { mutableStateOf(false) }
     val transactionLogs = remember { mutableStateListOf<String>() }
 
@@ -195,6 +199,28 @@ fun MainScreen(
         val vibrationSetting by viewModel.vibrationSetting.collectAsState()
         val strengthThreshold by viewModel.vibrationStrengthThreshold.collectAsState()
         
+        val p1Enabled by viewModel.p1Enabled.collectAsState()
+        val p1TargetDigit by viewModel.p1TargetDigit.collectAsState()
+        val p1MinConfidence by viewModel.p1MinConfidence.collectAsState()
+        
+        val p2Enabled by viewModel.p2Enabled.collectAsState()
+        val p2TargetDigit by viewModel.p2TargetDigit.collectAsState()
+        val p2MinConfidence by viewModel.p2MinConfidence.collectAsState()
+        
+        val p3Enabled by viewModel.p3Enabled.collectAsState()
+        val p3MinFrequency by viewModel.p3MinFrequency.collectAsState()
+        val p3MinAbsence by viewModel.p3MinAbsence.collectAsState()
+        
+        val p4Enabled by viewModel.p4Enabled.collectAsState()
+        val p4MinAppearances by viewModel.p4MinAppearances.collectAsState()
+        
+        val sessionSignalLimit by viewModel.sessionSignalLimit.collectAsState()
+        val sessionSignalCount by viewModel.sessionSignalCount.collectAsState()
+        
+        val timerSession1 by viewModel.timerSession1.collectAsState()
+        val timerSession2 by viewModel.timerSession2.collectAsState()
+        val timerSession3 by viewModel.timerSession3.collectAsState()
+        
         AlertDialog(
             onDismissRequest = { showSettingsState = false },
             containerColor = customCard,
@@ -210,7 +236,9 @@ fun MainScreen(
             text = {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier.padding(top = 8.dp)
+                    modifier = Modifier
+                        .padding(top = 8.dp)
+                        .verticalScroll(rememberScrollState())
                 ) {
                     // 1. ACTIVE STRATEGY SELECTION
                     Column {
@@ -359,6 +387,7 @@ fun MainScreen(
                             }
                         }
                     }
+
                     // 5. MINIMUM HAPTIC SIGNAL STRENGTH FILTER
                     Column {
                         Row(
@@ -391,6 +420,319 @@ fun MainScreen(
                             ),
                             modifier = Modifier.testTag("signal_strength_slider")
                         )
+                    }
+
+                    Divider(color = customBorder)
+
+                    // 6. SESSION SIGNAL TARGETS
+                    Column {
+                        Text("TRADING STATISTICS AND THRESHOLDS", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Current Session Signal Count:", color = Color.LightGray, fontSize = 11.sp)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text("$sessionSignalCount", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Button(
+                                    onClick = { viewModel.resetSessionSignalCount() },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray),
+                                    shape = RoundedCornerShape(4.dp),
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(24.dp)
+                                ) {
+                                    Text("Reset", color = Color.White, fontSize = 9.sp)
+                                }
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Text("Session Signal Limit (Auto-Disengage):", color = Color.LightGray, fontSize = 11.sp)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            listOf(3 to "3", 5 to "5", 10 to "10", 25 to "25", -1 to "No Limit").forEach { (limit, title) ->
+                                val isSel = sessionSignalLimit == limit
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (isSel) customAccent else customBg)
+                                        .clickable { viewModel.setSessionSignalLimit(limit) }
+                                        .padding(vertical = 6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(title, color = if (isSel) Color.White else Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    Divider(color = customBorder)
+
+                    // 7. SESSIONS SCHEDULE CLOCKS
+                    Column {
+                        Text("HOURLY SESSIONS (HH:mm format)", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(
+                                Triple("1", timerSession1) { t: String -> viewModel.setTimerSession1(t) },
+                                Triple("2", timerSession2) { t: String -> viewModel.setTimerSession2(t) },
+                                Triple("3", timerSession3) { t: String -> viewModel.setTimerSession3(t) }
+                            ).forEach { (num, textVal, setVal) ->
+                                var tempText by remember(textVal) { mutableStateOf(textVal) }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Timer $num", color = Color.Gray, fontSize = 9.sp)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    BasicTextField(
+                                        value = tempText,
+                                        onValueChange = { input ->
+                                            if (input.length <= 5) {
+                                                tempText = input
+                                                if (input.matches(Regex("^[0-2][0-9]:[0-5][0-9]$"))) {
+                                                    setVal(input)
+                                                }
+                                            }
+                                        },
+                                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(customBg)
+                                            .border(1.dp, customBorder, RoundedCornerShape(6.dp))
+                                            .padding(vertical = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+                        Text("Make sure formatting uses 24H HH:mm format (e.g., 09:30, 21:15) to matching alert checks.", color = Color.Gray, fontSize = 9.sp, modifier = Modifier.padding(top = 4.dp))
+                    }
+
+                    Divider(color = customBorder)
+
+                    // 8. P1 ENGINE
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("P1: CONFID MATCH ENGINE", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Switch(
+                                checked = p1Enabled,
+                                onCheckedChange = { viewModel.setP1Enabled(it) },
+                                modifier = Modifier.scale(0.8f)
+                            )
+                        }
+                        if (p1Enabled) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Target Digit: $p1TargetDigit", color = Color.LightGray, fontSize = 11.sp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                (0..9).forEach { d ->
+                                    val isSel = p1TargetDigit == d
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(if (isSel) customAccent else customBg)
+                                            .clickable { viewModel.setP1TargetDigit(d) }
+                                            .padding(vertical = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(d.toString(), color = if (isSel) Color.White else Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Min Confidence Threshold:", color = Color.Gray, fontSize = 11.sp)
+                                Text("${(p1MinConfidence * 100).toInt()}%", color = customAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Slider(
+                                value = p1MinConfidence.toFloat(),
+                                onValueChange = { viewModel.setP1MinConfidence(it.toDouble()) },
+                                valueRange = 0.0f..1.0f,
+                                colors = SliderDefaults.colors(thumbColor = customAccent, activeTrackColor = customAccent)
+                            )
+                        }
+                    }
+
+                    Divider(color = customBorder)
+
+                    // 9. P2 ENGINE
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("P2: CONTRA MATCH ENGINE", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Switch(
+                                checked = p2Enabled,
+                                onCheckedChange = { viewModel.setP2Enabled(it) },
+                                modifier = Modifier.scale(0.8f)
+                            )
+                        }
+                        if (p2Enabled) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Target Digit: $p2TargetDigit", color = Color.LightGray, fontSize = 11.sp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                (0..9).forEach { d ->
+                                    val isSel = p2TargetDigit == d
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(if (isSel) customAccent else customBg)
+                                            .clickable { viewModel.setP2TargetDigit(d) }
+                                            .padding(vertical = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(d.toString(), color = if (isSel) Color.White else Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Min Confidence Threshold:", color = Color.Gray, fontSize = 11.sp)
+                                Text("${(p2MinConfidence * 100).toInt()}%", color = customAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Slider(
+                                value = p2MinConfidence.toFloat(),
+                                onValueChange = { viewModel.setP2MinConfidence(it.toDouble()) },
+                                valueRange = 0.0f..1.0f,
+                                colors = SliderDefaults.colors(thumbColor = customAccent, activeTrackColor = customAccent)
+                            )
+                        }
+                    }
+
+                    Divider(color = customBorder)
+
+                    // 10. P3 ENGINE
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("P3: FREQUENCY & ABSENCE ENGINE", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Switch(
+                                checked = p3Enabled,
+                                onCheckedChange = { viewModel.setP3Enabled(it) },
+                                modifier = Modifier.scale(0.8f)
+                            )
+                        }
+                        if (p3Enabled) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Min Frequency Threshold:", color = Color.Gray, fontSize = 11.sp)
+                                Text("${(p3MinFrequency * 100).toInt()}%", color = customAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Slider(
+                                value = p3MinFrequency.toFloat(),
+                                onValueChange = { viewModel.setP3MinFrequency(it.toDouble()) },
+                                valueRange = 0.0f..1.0f,
+                                colors = SliderDefaults.colors(thumbColor = customAccent, activeTrackColor = customAccent)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Min Absence periods:", color = Color.Gray, fontSize = 11.sp)
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    listOf(5, 7, 10, 15, 20).forEach { a ->
+                                        val isSel = p3MinAbsence == a
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(if (isSel) customAccent else customBg)
+                                                .clickable { viewModel.setP3MinAbsence(a) }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(a.toString(), color = if (isSel) Color.White else Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Divider(color = customBorder)
+
+                    // 11. P4 ENGINE
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("P4: TREND SEQUENCE ENGINE", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Switch(
+                                checked = p4Enabled,
+                                onCheckedChange = { viewModel.setP4Enabled(it) },
+                                modifier = Modifier.scale(0.8f)
+                            )
+                        }
+                        if (p4Enabled) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Min Sequential Appearances:", color = Color.Gray, fontSize = 11.sp)
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    listOf(2, 3, 4, 5, 6).forEach { ap ->
+                                        val isSel = p4MinAppearances == ap
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(if (isSel) customAccent else customBg)
+                                                .clickable { viewModel.setP4MinAppearances(ap) }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(ap.toString(), color = if (isSel) Color.White else Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             },
@@ -834,7 +1176,7 @@ fun MainScreen(
                 item {
                     AutoClickerControlCard(
                         autoClickerEnabled = autoClickerEnabled,
-                        onToggleAutoClicker = { autoClickerEnabled = it },
+                        onToggleAutoClicker = { viewModel.setAutoClickerEnabled(it) },
                         transactionLogs = transactionLogs,
                         cardBgColor = customCard,
                         borderColor = customBorder,
@@ -3700,6 +4042,52 @@ fun AutoClickerControlCard(
                         )
                     )
                 }
+            }
+            
+            // Large Prominent Play/Stop Toggle Action Button
+            Button(
+                onClick = {
+                    val nextState = !autoClickerEnabled
+                    if (nextState) {
+                        if (DerivAccessibilityService.isServiceEnabled()) {
+                            onToggleAutoClicker(true)
+                        } else {
+                            try {
+                                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                }
+                                context.startActivity(intent)
+                                android.widget.Toast.makeText(context, "Please enable ProTrader under Downloaded Apps/Accessibility Services", android.widget.Toast.LENGTH_LONG).show()
+                            } catch (e: Exception) {
+                                android.widget.Toast.makeText(context, "Could not open Accessibility Settings: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    } else {
+                        onToggleAutoClicker(false)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .testTag("play_pause_clicker_button"),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (autoClickerEnabled) Color(0xFFFF3D00) else Color(0xFF00E676)
+                ),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    text = if (autoClickerEnabled) "⏸" else "▶",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = if (autoClickerEnabled) "STOP / IDLE RUN" else "START AUTOMATED CLICKER",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
             }
             
             Divider(color = borderColor)
