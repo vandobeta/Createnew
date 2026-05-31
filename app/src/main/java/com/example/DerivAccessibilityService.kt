@@ -3,6 +3,8 @@ package com.example
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import android.graphics.Rect
+import android.view.accessibility.AccessibilityNodeInfo
 import android.os.Build
 import android.view.accessibility.AccessibilityEvent
 import android.util.Log
@@ -50,7 +52,19 @@ class DerivAccessibilityService : AccessibilityService() {
 
         fun executeClickAt(x: Float, y: Float): Boolean {
             val service = instance ?: return false
+            
+            // 1. Try real programmatic click first by querying active windows and view tree nodes
+            try {
+                if (performNodeClickAt(service, x, y)) {
+                    return true
+                }
+            } catch (e: Exception) {
+                Log.e("DerivAccessibility", "Error during real node click: ${e.message}")
+            }
+            
+            // 2. Fallback to precision touch gesture dispatch if no clickable view/node is found at coordinates (e.g. custom canvases)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                Log.d("DerivAccessibility", "Falling back to high-precision hardware gesture click at ($x, $y)")
                 try {
                     val path = Path()
                     path.moveTo(x, y)
@@ -60,17 +74,73 @@ class DerivAccessibilityService : AccessibilityService() {
                     return service.dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
                         override fun onCompleted(gestureDescription: GestureDescription?) {
                             super.onCompleted(gestureDescription)
-                            Log.d("DerivAccessibility", "Click tap successfully simulated at ($x, $y)")
+                            Log.d("DerivAccessibility", "Precision gesture click successfully tapped at ($x, $y)")
                         }
                         override fun onCancelled(gestureDescription: GestureDescription?) {
                             super.onCancelled(gestureDescription)
-                            Log.e("DerivAccessibility", "Click tap simulation cancelled at ($x, $y)")
+                            Log.e("DerivAccessibility", "Precision gesture click cancelled at ($x, $y)")
                         }
                     }, null)
                 } catch (e: Exception) {
-                    Log.e("DerivAccessibility", "Failed to dispatch gesture: ${e.message}")
+                    Log.e("DerivAccessibility", "Failed to dispatch fallback gesture: ${e.message}")
                 }
             }
+            return false
+        }
+
+        private fun performNodeClickAt(service: DerivAccessibilityService, x: Float, y: Float): Boolean {
+            val xInt = x.toInt()
+            val yInt = y.toInt()
+            
+            // Query modern system windows list to find nodes across all apps/dialogs
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                val windowList = service.windows
+                if (windowList != null) {
+                    for (window in windowList) {
+                        val root = window.root ?: continue
+                        val clicked = findAndClickNodeDeepest(root, xInt, yInt)
+                        if (clicked) {
+                            return true
+                        }
+                    }
+                }
+            }
+            
+            // Fallback: active window root node hierarchy directly
+            val activeRoot = service.rootInActiveWindow ?: return false
+            return findAndClickNodeDeepest(activeRoot, xInt, yInt)
+        }
+
+        private fun findAndClickNodeDeepest(node: AccessibilityNodeInfo, x: Int, y: Int): Boolean {
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            if (!bounds.contains(x, y)) {
+                return false
+            }
+
+            // 1. Search children recursively to find the deepest match (prioritizing leaf elements like buttons and text keys)
+            val childrenCount = node.childCount
+            for (i in 0 until childrenCount) {
+                val child = node.getChild(i) ?: continue
+                val clicked = findAndClickNodeDeepest(child, x, y)
+                if (clicked) {
+                    return true
+                }
+            }
+
+            // 2. If no matching child was clicked, search up starting from this element for the closest clickable parent
+            var current: AccessibilityNodeInfo? = node
+            while (current != null) {
+                if (current.isClickable) {
+                    val success = current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (success) {
+                        Log.d("DerivAccessibility", "Executed real programmatic click (no simulation) on ${current.className} at bounds: ${bounds.toShortString()}")
+                        return true
+                    }
+                }
+                current = current.parent
+            }
+
             return false
         }
     }
