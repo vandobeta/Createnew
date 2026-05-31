@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">ProTrader</string>
+    <string name="accessibility_service_description">ProTrader Automatic Assistive Signal Clicker Service. Required to auto-click selected coordinates upon active digit signals.</string>
 </resources>

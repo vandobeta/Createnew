@@ -29,6 +29,11 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -40,6 +45,19 @@ enum class TradeType(val displayName: String, val description: String) {
     EVEN_ODD("Even/Odd", "Predict the last digit parity"),
     RISE_FALL("Rise/Fall", "Predict rise/fall price trends")
 }
+
+sealed class GeminiAnalysisState {
+    object Idle : GeminiAnalysisState()
+    object Loading : GeminiAnalysisState()
+    data class Success(val adviceMarkdown: String) : GeminiAnalysisState()
+    data class Error(val errorMsg: String) : GeminiAnalysisState()
+}
+
+data class ChatMessage(
+    val text: String,
+    val isUser: Boolean,
+    val timestamp: String
+)
 
 data class CustomStrategy(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -63,6 +81,27 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
 
     private val _vibrationSetting = MutableStateFlow("STANDARD") // "STANDARD", "TICK_ONLY", "HEAVY", "OFF"
     val vibrationSetting: StateFlow<String> = _vibrationSetting.asStateFlow()
+
+    private val _vibrationStrengthThreshold = MutableStateFlow(60f) // 0.0f to 100.0f, default 60%
+    val vibrationStrengthThreshold: StateFlow<Float> = _vibrationStrengthThreshold.asStateFlow()
+
+    private val _geminiReportState = MutableStateFlow<GeminiAnalysisState>(GeminiAnalysisState.Idle)
+    val geminiReportState: StateFlow<GeminiAnalysisState> = _geminiReportState.asStateFlow()
+
+    private val _chatMessages = MutableStateFlow<List<ChatMessage>>(listOf(
+        ChatMessage(
+            text = "Hello! I am your Gemini Quant Advisor chatbot. Ask me anything about current volatility indices, digit frequency biases, mathematical price variances, or trading stability. I am context-aware of current live data!",
+            isUser = false,
+            timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        )
+    ))
+    val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
+
+    private val _chatbotLoading = MutableStateFlow(false)
+    val chatbotLoading: StateFlow<Boolean> = _chatbotLoading.asStateFlow()
+
+    private val _signalConfirmedFlow = MutableSharedFlow<String>(extraBufferCapacity = 64)
+    val signalConfirmedFlow = _signalConfirmedFlow.asSharedFlow()
 
     private val _selectedColorTheme = MutableStateFlow("SLATE") // "SLATE", "CYBERPUNK", "FOREST", "GOLD"
     val selectedColorTheme: StateFlow<String> = _selectedColorTheme.asStateFlow()
@@ -149,6 +188,10 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
 
     fun setVibrationSetting(setting: String) {
         _vibrationSetting.value = setting
+    }
+
+    fun setVibrationStrengthThreshold(value: Float) {
+        _vibrationStrengthThreshold.value = value
     }
 
     fun setSelectedColorTheme(theme: String) {
@@ -251,13 +294,9 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
     // Timer Job
     private var timerJob: Job? = null
     
-    // Ticks feed Flow mapped securely from selected symbol
-    val latestTicksFlow: StateFlow<List<TickEntity>> = _selectedSymbol
-        .flatMapLatest { symbol ->
-            repository.getLatest1000TicksFlow(symbol)
-        }
-        .flowOn(Dispatchers.IO)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    // Ticks feed Flow maintained in-memory to prevent heavy disk-read Room query execution on every live tick
+    private val _latestTicksFlow = MutableStateFlow<List<TickEntity>>(emptyList())
+    val latestTicksFlow: StateFlow<List<TickEntity>> = _latestTicksFlow.asStateFlow()
 
     // Calculated analysis state mapped reactively
     val analysisReport: StateFlow<AnalysisReport?> = combine(
@@ -295,6 +334,16 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
             android.util.Log.e("DigitAnalysisViewModel", "startTimerLoop crash: ${e.message}")
         }
 
+        // Preload recent ticks from local database on startup
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val initialTicks = repository.getLatest1000Ticks(_selectedSymbol.value)
+                _latestTicksFlow.value = initialTicks
+            } catch (e: Exception) {
+                android.util.Log.e("DigitAnalysisViewModel", "Failed to pre-load initial ticks: ${e.message}")
+            }
+        }
+
         // Handle incoming live ticks
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -320,6 +369,15 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
                         // Evaluate Custom fully customisable strategies
                         evaluateCustomStrategies(currentDigitsList, tick.price)
 
+                        // Add new live tick to dynamically maintained memory cache to prevent continuous database re-reads
+                        val newEntity = TickEntity(
+                            symbol = tick.symbol,
+                            price = tick.price,
+                            epoch = tick.epoch,
+                            digit = tick.lastDigit
+                        )
+                        _latestTicksFlow.value = (listOf(newEntity) + _latestTicksFlow.value).take(1000)
+
                         // Persist to local database
                         repository.saveTick(
                             symbol = tick.symbol,
@@ -343,6 +401,16 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
         _livePrice.value = 0.0
         _liveLastDigit.value = -1
         _liveTimestamp.value = ""
+        
+        // Load initial 1000 ticks from DB asynchronously (only once per symbol change)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val initialTicks = repository.getLatest1000Ticks(symbolCode)
+                _latestTicksFlow.value = initialTicks
+            } catch (e: Exception) {
+                android.util.Log.e("DigitAnalysisViewModel", "Failed to load ticks on symbol selection: ${e.message}")
+            }
+        }
         
         socketManager.subscribeToSymbol(symbolCode)
     }
@@ -407,6 +475,40 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
             }
         } catch (e: Throwable) {
             android.util.Log.e("DigitAnalysisViewModel", "Vibration failed: ${e.message}")
+        }
+    }
+
+    fun getSignalStrength(): Double {
+        val report = analysisReport.value ?: return 100.0
+        return when (_selectedTradeType.value) {
+            TradeType.OVER_UNDER -> {
+                if (_overUnderBias.value == "OVER") report.overPercentage else report.underPercentage
+            }
+            TradeType.MATCHES_DIFFERS -> {
+                if (_matchesDiffersBias.value == "MATCHES") report.topMatchesPct else report.topDiffersPct
+            }
+            TradeType.EVEN_ODD -> {
+                if (_evenOddBias.value == "EVEN") report.evenPercentage else report.oddPercentage
+            }
+            TradeType.RISE_FALL -> {
+                if (_riseFallBias.value == "RISE") report.risePercentage else report.fallPercentage
+            }
+        }
+    }
+
+    fun notifySignalConfirmed(signalName: String) {
+        viewModelScope.launch {
+            _signalConfirmedFlow.emit(signalName)
+        }
+    }
+
+    fun vibrateOnSignalIfStrong(durationMs: Long) {
+        val strength = getSignalStrength()
+        val threshold = _vibrationStrengthThreshold.value
+        if (strength >= threshold) {
+            triggerVibration(durationMs)
+        } else {
+            addStrategyLog("Vibrator Filtered: Signal strength (${String.format("%.1f", strength)}%) below threshold (${String.format("%.1f", threshold)}%)")
         }
     }
 
@@ -619,8 +721,11 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
             val modeTitle = "🔥 OVER/UNDER TRIGGER ACTIVE!"
             val modeMsg = "Sequence condition on barrier $barrierVal matched! Execute contract immediately."
             
-            // Trigger haptic vibration
-            vibrateBasedOnSetting(750)
+            // Trigger haptic vibration (filtered dynamically by minimum signal strength)
+            vibrateOnSignalIfStrong(750)
+            
+            // Notify active auto-clickers
+            notifySignalConfirmed("OVER_UNDER")
             
             // Show alert
             showAlertBasedOnSetting(modeTitle, modeMsg)
@@ -717,13 +822,16 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
                 val alarmTitle = "🤖 CUSTOM STRATEGY: ${strategy.name}"
                 val alarmMessage = triggerDesc
 
+                // Notify active auto-clickers
+                notifySignalConfirmed("CUSTOM_STRATEGY_${strategy.name}")
+
                 when (strategy.actionType) {
                     "VIBRATE_AND_NOTIFY" -> {
-                        triggerVibration(1000)
+                        vibrateOnSignalIfStrong(1000)
                         showAlertBasedOnSetting(alarmTitle, alarmMessage)
                     }
                     "ONLY_VIBRATE" -> {
-                        triggerVibration(500)
+                        vibrateOnSignalIfStrong(500)
                         _nowBarText.value = "🤖 VIBRATE ACTION: ${strategy.name} - $triggerDesc"
                     }
                     "ONLY_NOTIFY" -> {
@@ -817,14 +925,12 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
                 } else {
                     _nextEntrySeconds.value = 5 // reset to perfect 5 seconds timer!
                     
-                    // Long tactile alert vibration (900ms) notifying immediate entry on stop!
-                    triggerVibration(900)
-                    
                     val report = analysisReport.value
                     if (report != null) {
                         var title = ""
                         var msgText = ""
                         var nowText = ""
+                        var shouldAlert = true
                         
                         when (_selectedTradeType.value) {
                             TradeType.MATCHES_DIFFERS -> {
@@ -868,15 +974,28 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
                                     nowText = "🚀 EXECUTE $bias $barVal NOW (Trend confidence: $pct%)"
                                 } else {
                                     nowText = "⏳ OVER/UNDER WAITING: Criteria Guide status not matched."
+                                    shouldAlert = false
                                 }
                             }
                         }
                         
-                        if (nowText.isNotEmpty()) {
-                            _nowBarText.value = nowText
+                        if (shouldAlert) {
+                            // Long tactile alert vibration (900ms) notifying immediate entry on stop!
+                            vibrateOnSignalIfStrong(900)
+                            
+                            if (nowText.isNotEmpty()) {
+                                _nowBarText.value = nowText
+                                if (nowText.startsWith("🚀 EXECUTE")) {
+                                    notifySignalConfirmed(_selectedTradeType.value.name)
+                                }
+                            }
                             if (title.isNotEmpty() && msgText.isNotEmpty()) {
                                 _nowBarFlashActive.value = true
                                 showAlertBasedOnSetting(title, msgText)
+                            }
+                        } else {
+                            if (nowText.isNotEmpty()) {
+                                _nowBarText.value = nowText
                             }
                         }
                     } else {
@@ -899,6 +1018,214 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
             sdf.format(Date(epoch * 1000))
         } catch (e: Exception) {
             ""
+        }
+    }
+
+    suspend fun callGeminiApi(prompt: String): String = withContext(Dispatchers.IO) {
+        val apiKey = com.example.BuildConfig.GEMINI_API_KEY
+        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+            return@withContext "Error: Gemini API Key is missing or not configured! Please enter your GEMINI_API_KEY in the AI Studio Secrets panel."
+        }
+        
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
+        
+        val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
+        
+        // Build JSON Payload using native org.json
+        val partsObj = org.json.JSONObject().put("text", prompt)
+        val partList = org.json.JSONArray().put(partsObj)
+        val contentObj = org.json.JSONObject().put("parts", partList)
+        val contentsArr = org.json.JSONArray().put(contentObj)
+        val requestBodyObj = org.json.JSONObject().put("contents", contentsArr)
+        
+        // Optional System Instruction
+        val sysInstructionParts = org.json.JSONObject().put("text", "You are a professional High-Frequency Trading quantitative analyst. Correlate multi-term high-frequency tick streams to identify patterns, anomalies, structural breaks, and advise on optimal contract entry parameters. Provide clean, highly structured, concise markdown advice.")
+        val sysInstructionContent = org.json.JSONObject().put("parts", org.json.JSONArray().put(sysInstructionParts))
+        requestBodyObj.put("systemInstruction", sysInstructionContent)
+        
+        val client = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+            
+        val body = okhttp3.RequestBody.create(mediaType, requestBodyObj.toString())
+        val request = okhttp3.Request.Builder()
+            .url(url)
+            .post(body)
+            .build()
+            
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext "API Call Failed with status ${response.code}: ${response.message}\nMake sure your GEMINI_API_KEY is correct and configured in the AI Studio Secrets panel."
+                }
+                val responseBodyString = response.body?.string() ?: return@withContext "Error: Empty response body received from Gemini."
+                val jsonResponse = org.json.JSONObject(responseBodyString)
+                val candidates = jsonResponse.getJSONArray("candidates")
+                val firstCandidate = candidates.getJSONObject(0)
+                val content = firstCandidate.getJSONObject("content")
+                val parts = content.getJSONArray("parts")
+                val firstPart = parts.getJSONObject(0)
+                firstPart.getString("text")
+            }
+        } catch (e: Exception) {
+            "Error executing Gemini request: ${e.message}"
+        }
+    }
+
+    fun runGeminiTickAnalysis() {
+        _geminiReportState.value = GeminiAnalysisState.Loading
+        viewModelScope.launch {
+            try {
+                val symbol = _selectedSymbol.value
+                val ticks = repository.getLatest1000Ticks(symbol)
+                val totalAvailable = ticks.size
+                if (totalAvailable < 10) {
+                    _geminiReportState.value = GeminiAnalysisState.Error("Insufficient data in database (Available: $totalAvailable ticks, need at least 10). Wait for more live ticks first.")
+                    return@launch
+                }
+                
+                // Collect subset statistics
+                val groupSizes = listOf(10, 25, 50, 100, 250, 500, 1000)
+                val groupReports = mutableMapOf<Int, String>()
+                
+                for (size in groupSizes) {
+                    val subTicks = ticks.take(size)
+                    val countAct = subTicks.size
+                    if (countAct == 0) continue
+                    
+                    // Calculate Parity
+                    val evenCount = subTicks.count { it.digit % 2 == 0 }
+                    val oddCount = countAct - evenCount
+                    val evenPct = (evenCount.toDouble() / countAct) * 100.0
+                    val oddPct = (oddCount.toDouble() / countAct) * 100.0
+                    
+                    // Calculate Digit Frequencies
+                    val freqMap = mutableMapOf<Int, Int>()
+                    subTicks.forEach { freqMap[it.digit] = (freqMap[it.digit] ?: 0) + 1 }
+                    val topDigit = freqMap.maxByOrNull { it.value }?.key ?: -1
+                    val topDigitPct = ((freqMap[topDigit] ?: 0).toDouble() / countAct) * 100.0
+                    
+                    // Calculate Price Trend (Rise vs Fall)
+                    var riseCount = 0
+                    var fallCount = 0
+                    if (countAct >= 2) {
+                        val chronological = subTicks.reversed()
+                        for (i in 1 until chronological.size) {
+                            if (chronological[i].price >= chronological[i - 1].price) riseCount++ else fallCount++
+                        }
+                    }
+                    val totalTrendDays = (riseCount + fallCount).coerceAtLeast(1)
+                    val risePct = (riseCount.toDouble() / totalTrendDays) * 100.0
+                    val fallPct = (fallCount.toDouble() / totalTrendDays) * 100.0
+                    
+                    val reportStr = "Group Size: $countAct ticks\n" +
+                                    "- Parity Ratio: EVEN: ${String.format("%.1f", evenPct)}% | ODD: ${String.format("%.1f", oddPct)}%\n" +
+                                    "- Peak Digit: [$topDigit] (${String.format("%.1f", topDigitPct)}% occurrences)\n" +
+                                    "- Price Pattern: RISE: ${String.format("%.1f", risePct)}% | FALL: ${String.format("%.1f", fallPct)}%"
+                    
+                    groupReports[size] = reportStr
+                }
+                
+                val promptBuilder = StringBuilder()
+                promptBuilder.append("We are currently trading volatility index '$symbol' on our digital platform.\n")
+                promptBuilder.append("We have nested our historic ticks into seven look-back subsets to isolate high-frequency drift. Please compare and correlate them to advise:\n\n")
+                
+                groupReports.forEach { (size, statText) ->
+                    promptBuilder.append("=== LATEST $size TICKS ===\n")
+                    promptBuilder.append(statText).append("\n\n")
+                }
+                
+                promptBuilder.append("Please analyze these multi-term subsets carefully, compare short-term anomalies (10/25 ticks) with long-term baseline distributions (500/1000 ticks) and generate a tidy diagnostic advice report containing:\n")
+                promptBuilder.append("1. **Multi-Term Drift & Divergence Analysis** (Highlight shifts in even/odd representation or price momentum)\n")
+                promptBuilder.append("2. **Hotspot/Skew Anomalies** (Is there any digit displaying high-frequency probability bumps?)\n")
+                promptBuilder.append("3. **Recommended Entry Strategy** (Clearly outline optimal parameters: selected trade type, entry directions/barriers, and bias to trigger immediately!).")
+                
+                val response = callGeminiApi(promptBuilder.toString())
+                _geminiReportState.value = GeminiAnalysisState.Success(response)
+            } catch (e: Exception) {
+                _geminiReportState.value = GeminiAnalysisState.Error("Analytical processing failed: ${e.message}")
+            }
+        }
+    }
+
+    fun clearChatHistory() {
+        val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        _chatMessages.value = listOf(
+            ChatMessage(
+                text = "Chat history cleared. How can I help you analyze the volatility market today?",
+                isUser = false,
+                timestamp = stamp
+            )
+        )
+    }
+
+    fun sendChatbotMessage(messageText: String) {
+        if (messageText.isBlank()) return
+        
+        val userTimestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        val userMsg = ChatMessage(text = messageText, isUser = true, timestamp = userTimestamp)
+        
+        _chatMessages.value = _chatMessages.value + userMsg
+        _chatbotLoading.value = true
+        
+        viewModelScope.launch {
+            try {
+                val symbol = _selectedSymbol.value
+                val ticks = repository.getLatest1000Ticks(symbol)
+                
+                // Calculate actual price variance and market stability
+                val prices = ticks.map { it.price }
+                val count = prices.size
+                
+                var varianceStr = "0.000000"
+                var stabilityStr = "Indeterminate"
+                
+                if (count > 1) {
+                    val mean = prices.average()
+                    val variance = prices.map { Math.pow(it - mean, 2.0) }.average()
+                    val stdDev = Math.sqrt(variance)
+                    val stabilityValue = if (mean > 0) (1.0 - (stdDev / mean)) * 100.0 else 0.0
+                    val stability = stabilityValue.coerceIn(0.0, 100.0)
+                    
+                    varianceStr = String.format("%.6f", variance)
+                    stabilityStr = String.format("%.2f%% (where 100%% is perfectly stable/flat, and low percentages represent extreme volatility expansion)", stability)
+                }
+                
+                val latestDigitsBy40 = ticks.take(40).map { it.digit }
+                val sampleSizesStr = "Latest DB sample count: $count ticks"
+                
+                val promptBuilder = StringBuilder()
+                promptBuilder.append("You are a professional High-Frequency Trading quantitative chatbot advisor.\n")
+                promptBuilder.append("The current trading pair/asset: $symbol\n")
+                promptBuilder.append("Latest Price: ${_livePrice.value}\n")
+                promptBuilder.append("Statistical Sample Size: $sampleSizesStr\n")
+                promptBuilder.append("Computed Mathematical Price Variance: $varianceStr\n")
+                promptBuilder.append("Computed Market Stability Factor: $stabilityStr\n")
+                promptBuilder.append("Last 40 Digits Stream: $latestDigitsBy40\n\n")
+                
+                promptBuilder.append("CHAT LOG HISTORY:\n")
+                _chatMessages.value.takeLast(10).forEach { msg ->
+                    val sender = if (msg.isUser) "Trader (User)" else "Quant Advisor (AI)"
+                    promptBuilder.append("[${msg.timestamp}] $sender: ${msg.text}\n")
+                }
+                
+                promptBuilder.append("\nPlease respond to the user's latest query precisely, referencing the computed price variance and market stability. Provide clean, condensed markdown format trading insights.")
+                
+                val response = callGeminiApi(promptBuilder.toString())
+                val replyTimestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+                _chatMessages.value = _chatMessages.value + ChatMessage(text = response, isUser = false, timestamp = replyTimestamp)
+            } catch (e: Exception) {
+                val errorTimestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+                _chatMessages.value = _chatMessages.value + ChatMessage(
+                    text = "Analytical processing error: ${e.message}",
+                    isUser = false,
+                    timestamp = errorTimestamp
+                )
+            } finally {
+                _chatbotLoading.value = false
+            }
         }
     }
 

@@ -1,5 +1,10 @@
 package com.example.deriv.ui
 
+import android.content.Intent
+import android.provider.Settings
+import androidx.compose.ui.platform.LocalContext
+import com.example.DerivAccessibilityService
+import com.example.deriv.ui.ChatMessage
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -10,6 +15,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
+import kotlin.math.roundToInt
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -22,6 +34,8 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.scale
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -56,6 +70,7 @@ fun MainScreen(
     isInPip: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val connectionStatus by viewModel.connectionStatus.collectAsState()
     val latency by viewModel.latency.collectAsState()
     val selectedSymbol by viewModel.selectedSymbol.collectAsState()
@@ -76,10 +91,15 @@ fun MainScreen(
 
     val analysisReport by viewModel.analysisReport.collectAsState()
     val totalTicksList by viewModel.latestTicksFlow.collectAsState()
+    val livePriceList = remember(totalTicksList) { totalTicksList.map { it.price } }
+    val top40Ticks = remember(totalTicksList) { totalTicksList.take(40) }
 
     val recentDigits by viewModel.recentDigits.collectAsState()
     val customStrategies by viewModel.customStrategies.collectAsState()
     val customStrategyLogs by viewModel.customStrategyLogs.collectAsState()
+    val geminiReportState by viewModel.geminiReportState.collectAsState()
+    val chatMessages by viewModel.chatMessages.collectAsState()
+    val chatbotLoading by viewModel.chatbotLoading.collectAsState()
 
     // --- Dynamic User Settings ---
     val selectedTheme by viewModel.selectedColorTheme.collectAsState()
@@ -92,6 +112,39 @@ fun MainScreen(
     val riseFallBias by viewModel.riseFallBias.collectAsState()
     
     var showSettingsState by remember { mutableStateOf(false) }
+
+    // --- AUTO-CLICKER FLOATING ACCESSIBILITY BUTTON STATES ---
+    var autoClickerEnabled by remember { mutableStateOf(false) }
+    var showAccessibilityDialog by remember { mutableStateOf(false) }
+    val transactionLogs = remember { mutableStateListOf<String>() }
+
+    LaunchedEffect(autoClickerEnabled) {
+        if (autoClickerEnabled) {
+            DerivAccessibilityService.showReticleOverlay(context)
+        } else {
+            DerivAccessibilityService.hideReticleOverlay()
+        }
+    }
+
+    // Listen to active digit signals to trigger real Accessibility Service tap at reticle position
+    LaunchedEffect(autoClickerEnabled) {
+        viewModel.signalConfirmedFlow.collect { signalType ->
+            if (autoClickerEnabled) {
+                val clickX = DerivAccessibilityService.reticleX
+                val clickY = DerivAccessibilityService.reticleY
+                
+                val timeStr = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+                val dispatched = DerivAccessibilityService.executeClickAt(clickX, clickY)
+                
+                if (dispatched) {
+                    transactionLogs.add(0, "[$timeStr] 🤖 [AUTO-CLICK] Gesture tap simulated at coordinates (X: ${clickX.roundToInt()}, Y: ${clickY.roundToInt()}) on signal match '$signalType'.")
+                    viewModel.triggerVibration(500)
+                } else {
+                    transactionLogs.add(0, "[$timeStr] ⚠️ [AUTO-CLICK FAILED] Click dispatch failed. Is Accessibility Service running?")
+                }
+            }
+        }
+    }
 
     // CENTRALIZED LIVE THEME COLOR MAPS
     val customBg = when (selectedTheme) {
@@ -140,6 +193,7 @@ fun MainScreen(
     // Modal Preferences settings dialog
     if (showSettingsState) {
         val vibrationSetting by viewModel.vibrationSetting.collectAsState()
+        val strengthThreshold by viewModel.vibrationStrengthThreshold.collectAsState()
         
         AlertDialog(
             onDismissRequest = { showSettingsState = false },
@@ -304,6 +358,39 @@ fun MainScreen(
                                 }
                             }
                         }
+                    }
+                    // 5. MINIMUM HAPTIC SIGNAL STRENGTH FILTER
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "SIGNAL STRENGTH FILTER",
+                                color = Color.Gray,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "${strengthThreshold.toInt()}% min",
+                                color = customAccent,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Slider(
+                            value = strengthThreshold,
+                            onValueChange = { viewModel.setVibrationStrengthThreshold(it) },
+                            valueRange = 0f..100f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = customAccent,
+                                activeTrackColor = customAccent,
+                                inactiveTrackColor = customBorder
+                            ),
+                            modifier = Modifier.testTag("signal_strength_slider")
+                        )
                     }
                 }
             },
@@ -503,8 +590,9 @@ fun MainScreen(
         }
     } else {
         // Default Full App Workspace View
-        Scaffold(
-            modifier = modifier.fillMaxSize(),
+        Box(modifier = Modifier.fillMaxSize()) {
+            Scaffold(
+                modifier = modifier.fillMaxSize(),
             containerColor = customBg,
             topBar = {
                 TopAppBar(
@@ -578,27 +666,13 @@ fun MainScreen(
                     flashActive = nowBarFlashActive,
                     isPipSupported = isPipSupported
                 )
-                
-                LazyColumn(
+                    LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     contentPadding = PaddingValues(bottom = 24.dp)
                 ) {
-                // Hide trade selector switch when in Over/Under mode context to preserve space & prevent collision (as user changes type in Settings)
-                if (selectedTradeType != TradeType.OVER_UNDER) {
-                    item {
-                        TradeTypeChooserCard(
-                            selectedType = selectedTradeType,
-                            onSelectType = { viewModel.selectTradeType(it) },
-                            cardBgColor = customCard,
-                            borderColor = customBorder,
-                            accentColor = customAccent
-                        )
-                    }
-                }
-
                 // 1. Parameters Form Card
                 item {
                     ParametersCard(
@@ -674,6 +748,20 @@ fun MainScreen(
                     )
                 }
 
+                // 1.5. Gemini AI Quant Advisor Chatbot Card
+                item {
+                    GeminiAIAdvisorChatbotCard(
+                        chatMessages = chatMessages,
+                        chatbotLoading = chatbotLoading,
+                        livePriceList = livePriceList,
+                        onSendMessage = { viewModel.sendChatbotMessage(it) },
+                        onClearChat = { viewModel.clearChatHistory() },
+                        accentColor = customAccent,
+                        cardBgColor = customCard,
+                        borderColor = customBorder
+                    )
+                }
+
                 // 2. Live Tick Quote Info Card
                 item {
                     LiveTickCard(
@@ -734,12 +822,24 @@ fun MainScreen(
                     // 9. Live Ticks Feed List Card
                     item {
                         LiveTickFeedCard(
-                            ticks = totalTicksList.take(40),
+                            ticks = top40Ticks,
                             cardBgColor = customCard,
                             borderColor = customBorder,
                             accentColor = customAccent
                         )
                     }
+                }
+
+                // 10. Automated Assistant Auto Clicker controls
+                item {
+                    AutoClickerControlCard(
+                        autoClickerEnabled = autoClickerEnabled,
+                        onToggleAutoClicker = { autoClickerEnabled = it },
+                        transactionLogs = transactionLogs,
+                        cardBgColor = customCard,
+                        borderColor = customBorder,
+                        accentColor = customAccent
+                    )
                 }
 
                 // Credits/Disclaimer Label
@@ -757,6 +857,48 @@ fun MainScreen(
             } // closes LazyColumn
         } // closes Column
     } // closes Scaffold innerPadding ->
+
+    if (showAccessibilityDialog) {
+        AlertDialog(
+            onDismissRequest = { showAccessibilityDialog = false },
+            title = { Text("Accessibility Service Required", color = Color.White) },
+            text = {
+                Text(
+                    "To simulate automatic clicks on signal confirmation, you must enable the ProTrader Assistive Clicker Service in system settings.\n\n" +
+                    "1. Tap 'Go to Settings'\n" +
+                    "2. Navigate to 'Downloaded Apps' (or 'Accessibility Services')\n" +
+                    "3. Choose 'ProTrader' and switch it ON.",
+                    color = Color.LightGray
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showAccessibilityDialog = false
+                        try {
+                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            android.widget.Toast.makeText(context, "Cannot open settings: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
+                    Text("Go to Settings", color = customAccent)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAccessibilityDialog = false }) {
+                    Text("Cancel", color = Color.Gray)
+                }
+            },
+            containerColor = customCard,
+            textContentColor = Color.LightGray,
+            titleContentColor = Color.White
+        )
+    }
+} // closes Box wrapper
 } // closes else
 } // closes MainScreen
 
@@ -783,86 +925,118 @@ fun ParametersCard(
     Card(
         colors = CardDefaults.cardColors(containerColor = cardBgColor),
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, borderColor)
+        border = BorderStroke(1.dp, borderColor),
+        modifier = Modifier.fillMaxWidth().testTag("parameters_card")
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Symbol dropdown Selector
-            Column {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = "SYMBOL",
-                    color = Color.Gray,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold
+                    text = "🎛️ COGNITIVE TRADE TERMINAL",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    letterSpacing = 0.5.sp
                 )
-                Spacer(modifier = Modifier.height(6.dp))
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(darkBgColor)
-                        .clickable { symbolMenuExpanded = true }
-                        .padding(horizontal = 12.dp),
-                    contentAlignment = Alignment.CenterStart
+                        .background(accentColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
+                    Text(
+                        text = "LIVE CONFIG",
+                        color = accentColor,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Divider(color = borderColor)
+
+            // Section 1: Trade Types (Previously TradeTypeChooserCard)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "CONTRACT STRATEGY",
+                    color = Color.Gray,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text(text = activeSymbolName, color = Color.White, fontSize = 14.sp)
-                        Icon(
-                            imageVector = Icons.Default.KeyboardArrowDown,
-                            contentDescription = "Expand Symbol selection",
-                            tint = Color.Gray
+                        TradeTypeChip(
+                            type = TradeType.MATCHES_DIFFERS,
+                            isSelected = selectedTradeType == TradeType.MATCHES_DIFFERS,
+                            onClick = { viewModel.selectTradeType(TradeType.MATCHES_DIFFERS) },
+                            accentColor = accentColor,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TradeTypeChip(
+                            type = TradeType.OVER_UNDER,
+                            isSelected = selectedTradeType == TradeType.OVER_UNDER,
+                            onClick = { viewModel.selectTradeType(TradeType.OVER_UNDER) },
+                            accentColor = accentColor,
+                            modifier = Modifier.weight(1f)
                         )
                     }
-
-                    DropdownMenu(
-                        expanded = symbolMenuExpanded,
-                        onDismissRequest = { symbolMenuExpanded = false },
-                        modifier = Modifier
-                            .fillMaxWidth(0.85f)
-                            .background(cardBgColor)
-                            .border(1.dp, borderColor, RoundedCornerShape(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        viewModel.symbols.forEach { (code, name) ->
-                            DropdownMenuItem(
-                                text = { Text(text = name, color = Color.White, fontSize = 14.sp) },
-                                onClick = {
-                                    viewModel.selectSymbol(code)
-                                    symbolMenuExpanded = false
-                                },
-                                modifier = Modifier.testTag("symbol_option_$code")
-                            )
-                        }
+                        TradeTypeChip(
+                            type = TradeType.EVEN_ODD,
+                            isSelected = selectedTradeType == TradeType.EVEN_ODD,
+                            onClick = { viewModel.selectTradeType(TradeType.EVEN_ODD) },
+                            accentColor = accentColor,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TradeTypeChip(
+                            type = TradeType.RISE_FALL,
+                            isSelected = selectedTradeType == TradeType.RISE_FALL,
+                            onClick = { viewModel.selectTradeType(TradeType.RISE_FALL) },
+                            accentColor = accentColor,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
 
-            // Hide Sample Size Ticks Select dropdown in Over/Under mode context to display ONLY relevant filters!
-            if (selectedTradeType != TradeType.OVER_UNDER) {
-                Column {
+            Divider(color = borderColor)
+
+            // Section 2: Parameters Grid (Symbol & (SampleSize or Barrier))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Left Column: SYMBOL
+                Column(modifier = Modifier.weight(1.2f)) {
                     Text(
-                        text = "SAMPLE SIZE (TICKS)",
+                        text = "SYMBOL",
                         color = Color.Gray,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
+                            .height(44.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(darkBgColor)
-                            .clickable { sizeMenuExpanded = true }
-                            .padding(horizontal = 12.dp),
+                            .clickable { symbolMenuExpanded = true }
+                            .padding(horizontal = 10.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         Row(
@@ -870,84 +1044,156 @@ fun ParametersCard(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(text = "$currentSize ticks", color = Color.White, fontSize = 14.sp)
+                            Text(
+                                text = currentSymbol.replace("R_", "V_"),
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                             Icon(
                                 imageVector = Icons.Default.KeyboardArrowDown,
-                                contentDescription = "Expand Size Selection",
-                                tint = Color.Gray
+                                contentDescription = "Select Symbol",
+                                tint = Color.Gray,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
 
                         DropdownMenu(
-                            expanded = sizeMenuExpanded,
-                            onDismissRequest = { sizeMenuExpanded = false },
+                            expanded = symbolMenuExpanded,
+                            onDismissRequest = { symbolMenuExpanded = false },
                             modifier = Modifier
-                                .fillMaxWidth(0.5f)
                                 .background(cardBgColor)
                                 .border(1.dp, borderColor, RoundedCornerShape(8.dp))
                         ) {
-                            listOf(25, 50, 100, 200, 500, 1000).forEach { size ->
+                            viewModel.symbols.forEach { (code, name) ->
                                 DropdownMenuItem(
-                                    text = { Text(text = "$size ticks", color = Color.White) },
+                                    text = { Text(text = name, color = Color.White, fontSize = 12.sp) },
                                     onClick = {
-                                        viewModel.selectSampleSize(size)
-                                        sizeMenuExpanded = false
+                                        viewModel.selectSymbol(code)
+                                        symbolMenuExpanded = false
                                     }
                                 )
                             }
                         }
                     }
                 }
-            }
 
-            // Barrier values slider
-            AnimatedVisibility(visible = selectedTradeType == TradeType.OVER_UNDER) {
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                // Right Column: Sample Size OR Barrier Slider
+                Column(modifier = Modifier.weight(0.8f)) {
+                    if (selectedTradeType == TradeType.OVER_UNDER) {
                         Text(
-                            text = "OVER / UNDER BARRIER: $currentBarrier",
+                            text = "BARRIER: $currentBarrier",
                             color = Color.Gray,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(darkBgColor)
+                                .padding(horizontal = 6.dp)
+                        ) {
+                            Slider(
+                                value = currentBarrier.toFloat(),
+                                onValueChange = { viewModel.selectBarrier(it.toInt()) },
+                                valueRange = 0f..9f,
+                                steps = 8,
+                                colors = SliderDefaults.colors(
+                                    thumbColor = accentColor,
+                                    activeTrackColor = accentColor,
+                                    inactiveTrackColor = borderColor
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = "SAMPLE SIZE",
+                            color = Color.Gray,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(darkBgColor)
+                                .clickable { sizeMenuExpanded = true }
+                                .padding(horizontal = 10.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "$currentSize Ticks",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Select Size",
+                                    tint = Color.Gray,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = sizeMenuExpanded,
+                                onDismissRequest = { sizeMenuExpanded = false },
+                                modifier = Modifier
+                                    .background(cardBgColor)
+                                    .border(1.dp, borderColor, RoundedCornerShape(8.dp))
+                            ) {
+                                listOf(25, 50, 100, 200, 500, 1000).forEach { size ->
+                                    DropdownMenuItem(
+                                        text = { Text(text = "$size ticks", color = Color.White, fontSize = 12.sp) },
+                                        onClick = {
+                                            viewModel.selectSampleSize(size)
+                                            sizeMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
                     }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Slider(
-                        value = currentBarrier.toFloat(),
-                        onValueChange = { viewModel.selectBarrier(it.toInt()) },
-                        valueRange = 0f..9f,
-                        steps = 8,
-                        colors = SliderDefaults.colors(
-                            thumbColor = DarkGreen,
-                            activeTrackColor = DarkGreen,
-                            inactiveTrackColor = borderColor
-                        ),
-                        modifier = Modifier.testTag("barrier_slider")
-                    )
                 }
             }
 
-            // Entry countdown switch logic
+            Divider(color = borderColor)
+
+            // Section 3: Timer Activation
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
-                    Text(
-                        text = "ENTRY TIMER",
-                        color = Color.Gray,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Timer Icon",
+                        tint = if (timerEnabled) accentColor else Color.Gray,
+                        modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = "5s cycle window trigger",
-                        color = Color.Gray,
-                        fontSize = 11.sp
+                        text = "ENTRY TIMER COUNTDOWN",
+                        color = Color.LightGray,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
 
@@ -956,21 +1202,23 @@ fun ParametersCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = if (timerEnabled) "ON" else "OFF",
-                        color = if (timerEnabled) DarkGreen else Color.Gray,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Black
+                        text = if (timerEnabled) "ACTIVE" else "DISABLED",
+                        color = if (timerEnabled) accentColor else Color.Gray,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold
                     )
                     Switch(
                         checked = timerEnabled,
                         onCheckedChange = { viewModel.toggleEntryTimer(it) },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
-                            checkedTrackColor = DarkGreen,
+                            checkedTrackColor = accentColor,
                             uncheckedThumbColor = Color.Gray,
                             uncheckedTrackColor = darkBgColor
                         ),
-                        modifier = Modifier.testTag("entry_timer_switch")
+                        modifier = Modifier
+                            .scale(0.85f)
+                            .testTag("entry_timer_switch")
                     )
                 }
             }
@@ -3073,3 +3321,500 @@ fun CreateStrategyDialog(
         }
     )
 }
+
+@Composable
+fun GeminiAIAdvisorChatbotCard(
+    chatMessages: List<ChatMessage>,
+    chatbotLoading: Boolean,
+    livePriceList: List<Double>,
+    onSendMessage: (String) -> Unit,
+    onClearChat: () -> Unit,
+    accentColor: Color,
+    cardBgColor: Color,
+    borderColor: Color
+) {
+    var userText by remember { mutableStateOf("") }
+    
+    // Compute dynamic real-time Price Variance & stability percentage on the fly for the chatbot header
+    val variance: Double
+    val stability: Double
+    val count = livePriceList.size
+    
+    if (count > 1) {
+        val mean = livePriceList.average()
+        val computedVar = livePriceList.map { Math.pow(it - mean, 2.0) }.average()
+        val stdDev = Math.sqrt(computedVar)
+        val stabilityValue = if (mean > 0) (1.0 - (stdDev / mean)) * 100.0 else 0.0
+        
+        variance = computedVar
+        stability = stabilityValue.coerceIn(0.0, 100.0)
+    } else {
+        variance = 0.0
+        stability = 100.0
+    }
+    
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .testTag("gemini_chatbot_card"),
+        colors = CardDefaults.cardColors(containerColor = cardBgColor),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(text = "🤖", fontSize = 20.sp)
+                    Column {
+                        Text(
+                            text = "Gemini Quant Advisor",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "HFT price-drift context-aware chatbot",
+                            color = Color.Gray,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+                
+                IconButton(
+                    onClick = onClearChat,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Clear Chat history",
+                        tint = Color.Gray,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+            
+            Divider(color = borderColor)
+            
+            // Market Context Header Info Badges
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Variance Info Block
+                Card(
+                    modifier = Modifier.weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.4f)),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, borderColor)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(text = "PRICE VARIANCE", color = Color.Gray, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = String.format("%.6f", variance),
+                            color = accentColor,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+                
+                // Stability Info Block
+                Card(
+                    modifier = Modifier.weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.4f)),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, borderColor)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(text = "MARKET STABILITY", color = Color.Gray, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        val stabilityColor = when {
+                            stability >= 95.0 -> Color(0xFF00E676)
+                            stability >= 90.0 -> Color(0xFFFFD600)
+                            else -> Color(0xFFFF1744)
+                        }
+                        Text(
+                            text = String.format("%.2f%%", stability),
+                            color = stabilityColor,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+            
+            // Chat Message list window
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .border(1.dp, borderColor, RoundedCornerShape(8.dp))
+                    .padding(8.dp)
+            ) {
+                val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                
+                androidx.compose.foundation.lazy.LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(chatMessages) { msg ->
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = if (msg.isUser) Alignment.End else Alignment.Start
+                        ) {
+                            Text(
+                                text = if (msg.isUser) "Trader (You)" else "Gemini Advisor",
+                                color = if (msg.isUser) accentColor else Color.Gray,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(
+                                        RoundedCornerShape(
+                                            topStart = if (msg.isUser) 12.dp else 0.dp,
+                                            topEnd = if (msg.isUser) 0.dp else 12.dp,
+                                            bottomStart = 12.dp,
+                                            bottomEnd = 12.dp
+                                        )
+                                    )
+                                    .background(if (msg.isUser) accentColor.copy(alpha = 0.2f) else borderColor.copy(alpha = 0.4f))
+                                    .border(
+                                        1.dp,
+                                        if (msg.isUser) accentColor.copy(alpha = 0.4f) else borderColor,
+                                        RoundedCornerShape(
+                                            topStart = if (msg.isUser) 12.dp else 0.dp,
+                                            topEnd = if (msg.isUser) 0.dp else 12.dp,
+                                            bottomStart = 12.dp,
+                                            bottomEnd = 12.dp
+                                        )
+                                    )
+                                    .padding(10.dp)
+                            ) {
+                                Text(
+                                    text = msg.text,
+                                    color = Color.LightGray,
+                                    fontSize = 11.sp,
+                                    lineHeight = 16.sp
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(1.dp))
+                            Text(
+                                text = msg.timestamp,
+                                color = Color.DarkGray,
+                                fontSize = 8.sp
+                            )
+                        }
+                    }
+                    
+                    if (chatbotLoading) {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    color = accentColor,
+                                    strokeWidth = 1.dp
+                                )
+                                Text(
+                                    text = "Gemini is analyzing multi-term price variance...",
+                                    color = Color.Gray,
+                                    fontSize = 10.sp,
+                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                )
+                            }
+                        }
+                    }
+                }
+                
+                // Auto-scroll to bottom of chat when messages size changes or loading state changes
+                LaunchedEffect(chatMessages.size, chatbotLoading) {
+                    if (chatMessages.isNotEmpty()) {
+                        listState.animateScrollToItem(chatMessages.size - 1)
+                    }
+                }
+            }
+            
+            // Input field and send button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = userText,
+                    onValueChange = { userText = it },
+                    placeholder = { Text("Ask about variance/stability...", fontSize = 11.sp, color = Color.Gray) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(50.dp)
+                        .testTag("chatbot_input_field"),
+                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 12.sp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedContainerColor = Color.Black.copy(alpha = 0.2f),
+                        unfocusedContainerColor = Color.Black.copy(alpha = 0.2f),
+                        focusedBorderColor = accentColor,
+                        unfocusedBorderColor = borderColor
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    maxLines = 2
+                )
+                
+                Button(
+                    onClick = {
+                        if (userText.isNotBlank()) {
+                            onSendMessage(userText)
+                            userText = ""
+                        }
+                    },
+                    enabled = !chatbotLoading,
+                    colors = ButtonDefaults.buttonColors(containerColor = accentColor),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .height(50.dp)
+                        .testTag("chatbot_send_button"),
+                    contentPadding = PaddingValues(horizontal = 12.dp)
+                ) {
+                    Text(
+                        text = "SEND",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AutoClickerControlCard(
+    autoClickerEnabled: Boolean,
+    onToggleAutoClicker: (Boolean) -> Unit,
+    transactionLogs: List<String>,
+    cardBgColor: Color,
+    borderColor: Color,
+    accentColor: Color
+) {
+    val context = LocalContext.current
+    val serviceRunning = DerivAccessibilityService.isServiceEnabled()
+    
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .testTag("auto_clicker_control_card"),
+        colors = CardDefaults.cardColors(containerColor = cardBgColor),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "🤖 Assistive Auto-Clicker",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                    Text(
+                        text = "Real accessibility clicks on signal match",
+                        color = Color.Gray,
+                        fontSize = 11.sp
+                    )
+                }
+                
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "ACTIVE",
+                        color = if (autoClickerEnabled) accentColor else Color.Gray,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Switch(
+                        checked = autoClickerEnabled,
+                        onCheckedChange = { isChecked ->
+                            if (isChecked) {
+                                if (DerivAccessibilityService.isServiceEnabled()) {
+                                    onToggleAutoClicker(true)
+                                } else {
+                                    try {
+                                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                        }
+                                        context.startActivity(intent)
+                                        android.widget.Toast.makeText(context, "Please enable ProTrader under Downloaded Apps/Accessibility Services", android.widget.Toast.LENGTH_LONG).show()
+                                    } catch (e: Exception) {
+                                        android.widget.Toast.makeText(context, "Could not open Accessibility Settings: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            } else {
+                                onToggleAutoClicker(false)
+                            }
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = accentColor,
+                            uncheckedThumbColor = Color.Gray,
+                            uncheckedTrackColor = borderColor
+                        )
+                    )
+                }
+            }
+            
+            Divider(color = borderColor)
+            
+            // Status Info
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(if (serviceRunning) Color(0xFF00E676) else Color(0xFFFF5252))
+                    )
+                    Text(
+                        text = if (serviceRunning) "ACCESSIBILITY SERVICE RUNNING" else "ACCESSIBILITY SERVICE DISABLED",
+                        color = if (serviceRunning) Color(0xFF00E676) else Color(0xFFFF5252),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                
+                if (!serviceRunning) {
+                    Text(
+                        text = "TAP TO ENABLE",
+                        color = accentColor,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clickable {
+                                try {
+                                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                    }
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    android.widget.Toast.makeText(context, "Error: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                            .background(accentColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+            
+            if (autoClickerEnabled) {
+                // Show current spatial coordinates
+                val clickTargetX = DerivAccessibilityService.reticleX.toInt()
+                val clickTargetY = DerivAccessibilityService.reticleY.toInt()
+                Text(
+                    text = "🎯 Target: Coordinate tap gestures will be simulated exactly at ($clickTargetX px, $clickTargetY px) relative to the screen coordinates.",
+                    color = Color.LightGray,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
+            } else {
+                Text(
+                    text = "Provide accessibility clicker permission. Enable this to overlay a movable hover crosshair reticle target. Position this reticle over any trade entry buttons (like our platform buttons or external trading layout keys). It will simulate gesture tap inputs perfectly when signals are matched on reset!",
+                    color = Color.Gray,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
+            }
+            
+            // Click Logs Ledger
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "REAL-TIME AUTOMATION LOGS",
+                    color = accentColor,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(110.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black)
+                        .border(1.dp, borderColor, RoundedCornerShape(8.dp))
+                        .padding(8.dp)
+                ) {
+                    if (transactionLogs.isEmpty()) {
+                        Text(
+                            text = "Auto-click logs will be recorded here...",
+                            color = Color.DarkGray,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 9.sp,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    } else {
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(transactionLogs) { logLine ->
+                                Text(
+                                    text = logLine,
+                                    color = if (logLine.contains("FAILED") || logLine.contains("⚠️")) Color(0xFFFF5252) else Color(0xFF00FF66),
+                                    fontSize = 9.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    lineHeight = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
