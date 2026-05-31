@@ -60,11 +60,11 @@ class DerivAccessibilityService : AccessibilityService() {
                     return service.dispatchGesture(gestureBuilder.build(), object : GestureResultCallback() {
                         override fun onCompleted(gestureDescription: GestureDescription?) {
                             super.onCompleted(gestureDescription)
-                            Log.d("DerivAccessibility", "Click gesture successfully simulated at ($x, $y)")
+                            Log.d("DerivAccessibility", "Click tap successfully simulated at ($x, $y)")
                         }
                         override fun onCancelled(gestureDescription: GestureDescription?) {
                             super.onCancelled(gestureDescription)
-                            Log.e("DerivAccessibility", "Click gesture simulation cancelled at ($x, $y)")
+                            Log.e("DerivAccessibility", "Click tap simulation cancelled at ($x, $y)")
                         }
                     }, null)
                 } catch (e: Exception) {

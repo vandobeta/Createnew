@@ -137,7 +137,7 @@ fun MainScreen(
                 val dispatched = DerivAccessibilityService.executeClickAt(clickX, clickY)
                 
                 if (dispatched) {
-                    transactionLogs.add(0, "[$timeStr] 🤖 [AUTO-CLICK] Gesture tap simulated at coordinates (X: ${clickX.roundToInt()}, Y: ${clickY.roundToInt()}) on signal match '$signalType'.")
+                    transactionLogs.add(0, "[$timeStr] 🤖 [AUTO-CLICK] Touch tap simulated at coordinates (X: ${clickX.roundToInt()}, Y: ${clickY.roundToInt()}) on signal match '$signalType'.")
                     viewModel.triggerVibration(500)
                 } else {
                     transactionLogs.add(0, "[$timeStr] ⚠️ [AUTO-CLICK FAILED] Click dispatch failed. Is Accessibility Service running?")
