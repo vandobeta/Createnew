@@ -134,17 +134,23 @@ fun MainScreen(
     LaunchedEffect(autoClickerEnabled) {
         viewModel.signalConfirmedFlow.collect { signalType ->
             if (autoClickerEnabled) {
-                val clickX = DerivAccessibilityService.reticleX
-                val clickY = DerivAccessibilityService.reticleY
-                
+                val isActiveOnOverlay = com.example.DerivAccessibilityService.overlayClickerActive.value
                 val timeStr = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
-                val dispatched = DerivAccessibilityService.executeClickAt(clickX, clickY)
                 
-                if (dispatched) {
-                    transactionLogs.add(0, "[$timeStr] 🤖 [AUTO-CLICK] Touch tap simulated at coordinates (X: ${clickX.roundToInt()}, Y: ${clickY.roundToInt()}) on signal match '$signalType'.")
-                    viewModel.triggerVibration(500)
+                if (!isActiveOnOverlay) {
+                    transactionLogs.add(0, "[$timeStr] ⏸ [AUTO-CLICK PAUSED] Click suppressed because Bot is toggled OFF on the Floating Overlay.")
                 } else {
-                    transactionLogs.add(0, "[$timeStr] ⚠️ [AUTO-CLICK FAILED] Click dispatch failed. Is Accessibility Service running?")
+                    val clickX = com.example.DerivAccessibilityService.reticleX
+                    val clickY = com.example.DerivAccessibilityService.reticleY
+                    
+                    val dispatched = com.example.DerivAccessibilityService.executeClickAt(clickX, clickY)
+                    
+                    if (dispatched) {
+                        transactionLogs.add(0, "[$timeStr] 🤖 [AUTO-CLICK] Touch tap simulated at coordinates (X: ${clickX.roundToInt()}, Y: ${clickY.roundToInt()}) on signal match '$signalType'.")
+                        viewModel.triggerVibration(500)
+                    } else {
+                        transactionLogs.add(0, "[$timeStr] ⚠️ [AUTO-CLICK FAILED] Click dispatch failed. Is Accessibility Service running?")
+                    }
                 }
             }
         }
@@ -220,6 +226,9 @@ fun MainScreen(
         val timerSession1 by viewModel.timerSession1.collectAsState()
         val timerSession2 by viewModel.timerSession2.collectAsState()
         val timerSession3 by viewModel.timerSession3.collectAsState()
+        
+        val aiProvider by viewModel.aiProvider.collectAsState()
+        val aiApiKey by viewModel.aiApiKey.collectAsState()
         
         AlertDialog(
             onDismissRequest = { showSettingsState = false },
@@ -733,6 +742,84 @@ fun MainScreen(
                                 }
                             }
                         }
+                    }
+
+                    Divider(color = customBorder)
+
+                    // 12. SPECIALIZED AI QUANT PROVIDER & API CREDENTIAL KEYS
+                    Column {
+                        Text("SPECIALIZED AI PRO QUANT ENGINE", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            listOf(
+                                "GEMINI" to "Gemini",
+                                "OPENAI" to "OpenAI",
+                                "CLAUDE" to "Claude",
+                                "DEEPSEEK" to "DeepSeek"
+                            ).forEach { (code, label) ->
+                                val isSelected = aiProvider == code
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) customAccent else customBg)
+                                        .border(1.dp, if (isSelected) customAccent else customBorder, RoundedCornerShape(8.dp))
+                                        .clickable { viewModel.setAiProvider(code) }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = label,
+                                        color = if (isSelected) Color.White else Color.LightGray,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("CUSTOM PRIVATE API TOKEN KEY", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(customBg)
+                                .border(1.dp, customBorder, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            if (aiApiKey.isEmpty()) {
+                                Text(
+                                    text = if (aiProvider == "GEMINI") "Using standard Key or Enter custom key..." else "Enter your custom API key here...",
+                                    color = Color.DarkGray,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            BasicTextField(
+                                value = aiApiKey,
+                                onValueChange = { viewModel.setAiApiKey(it) },
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    color = Color.White,
+                                    fontSize = 12.sp
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (aiProvider == "GEMINI") 
+                                "Leave blank to fall back on internal shared Google AI Studio BuildConfig key specifications." 
+                            else 
+                                "Required secret authorization credential to dispatch queries to your specific cloud provider.",
+                            color = Color.Gray,
+                            fontSize = 10.sp
+                        )
                     }
                 }
             },

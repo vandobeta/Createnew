@@ -38,5 +38,9 @@ data class SettingsEntity(
     // Custom daily session timers
     val timerSession1: String = "08:00",
     val timerSession2: String = "14:00",
-    val timerSession3: String = "20:00"
+    val timerSession3: String = "20:00",
+    
+    // AI configuration
+    val aiProvider: String = "GEMINI",
+    val aiApiKey: String = ""
 )

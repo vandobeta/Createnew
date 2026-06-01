@@ -141,6 +141,12 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
     
     private val _timerSession3 = MutableStateFlow("20:00")
     val timerSession3: StateFlow<String> = _timerSession3.asStateFlow()
+    
+    private val _aiProvider = MutableStateFlow("GEMINI")
+    val aiProvider: StateFlow<String> = _aiProvider.asStateFlow()
+    
+    private val _aiApiKey = MutableStateFlow("")
+    val aiApiKey: StateFlow<String> = _aiApiKey.asStateFlow()
 
     private val _geminiReportState = MutableStateFlow<GeminiAnalysisState>(GeminiAnalysisState.Idle)
     val geminiReportState: StateFlow<GeminiAnalysisState> = _geminiReportState.asStateFlow()
@@ -267,7 +273,9 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
                     sessionSignalCount = _sessionSignalCount.value,
                     timerSession1 = _timerSession1.value,
                     timerSession2 = _timerSession2.value,
-                    timerSession3 = _timerSession3.value
+                    timerSession3 = _timerSession3.value,
+                    aiProvider = _aiProvider.value,
+                    aiApiKey = _aiApiKey.value
                 )
                 db.settingsDao().saveSettings(entity)
             } catch (e: Exception) {
@@ -278,6 +286,16 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
 
     fun setAutoClickerEnabled(enabled: Boolean) {
         _autoClickerEnabled.value = enabled
+        saveSettingsToDb()
+    }
+
+    fun setAiProvider(provider: String) {
+        _aiProvider.value = provider
+        saveSettingsToDb()
+    }
+
+    fun setAiApiKey(key: String) {
+        _aiApiKey.value = key
         saveSettingsToDb()
     }
 
@@ -580,6 +598,9 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
                 _timerSession1.value = loadedSettings.timerSession1
                 _timerSession2.value = loadedSettings.timerSession2
                 _timerSession3.value = loadedSettings.timerSession3
+                
+                _aiProvider.value = loadedSettings.aiProvider
+                _aiApiKey.value = loadedSettings.aiApiKey
 
                 // After loading settings, update subscription symbol & reload initial ticks
                 socketManager.subscribeToSymbol(loadedSettings.selectedSymbol)
@@ -1329,26 +1350,10 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
     }
 
     suspend fun callGeminiApi(prompt: String): String = withContext(Dispatchers.IO) {
-        val apiKey = com.example.BuildConfig.GEMINI_API_KEY
-        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
-            return@withContext "Error: Gemini API Key is missing or not configured! Please enter your GEMINI_API_KEY in the AI Studio Secrets panel."
-        }
+        val provider = _aiProvider.value.uppercase()
+        val customKey = _aiApiKey.value.trim()
         
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
-        
-        val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
-        
-        // Build JSON Payload using native org.json
-        val partsObj = org.json.JSONObject().put("text", prompt)
-        val partList = org.json.JSONArray().put(partsObj)
-        val contentObj = org.json.JSONObject().put("parts", partList)
-        val contentsArr = org.json.JSONArray().put(contentObj)
-        val requestBodyObj = org.json.JSONObject().put("contents", contentsArr)
-        
-        // Optional System Instruction
-        val sysInstructionParts = org.json.JSONObject().put("text", "You are a professional High-Frequency Trading quantitative analyst. Correlate multi-term high-frequency tick streams to identify patterns, anomalies, structural breaks, and advise on optimal contract entry parameters. Provide clean, highly structured, concise markdown advice.")
-        val sysInstructionContent = org.json.JSONObject().put("parts", org.json.JSONArray().put(sysInstructionParts))
-        requestBodyObj.put("systemInstruction", sysInstructionContent)
+        val systemInstruction = "You are a professional High-Frequency Trading quantitative analyst. Correlate multi-term high-frequency tick streams to identify patterns, anomalies, structural breaks, and advise on optimal contract entry parameters. Provide clean, highly structured, concise markdown advice."
         
         val client = okhttp3.OkHttpClient.Builder()
             .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
@@ -1356,28 +1361,134 @@ class DigitAnalysisViewModel(application: Application) : AndroidViewModel(applic
             .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
             .build()
             
-        val body = okhttp3.RequestBody.create(mediaType, requestBodyObj.toString())
-        val request = okhttp3.Request.Builder()
-            .url(url)
-            .post(body)
-            .build()
-            
+        val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
+
         try {
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext "API Call Failed with status ${response.code}: ${response.message}\nMake sure your GEMINI_API_KEY is correct and configured in the AI Studio Secrets panel."
+            when (provider) {
+                "OPENAI" -> {
+                    if (customKey.isEmpty()) {
+                        return@withContext "Error: OpenAI API Key is missing! Please enter your OpenAI API key in the System Settings menu."
+                    }
+                    val url = "https://api.openai.com/v1/chat/completions"
+                    val requestBody = org.json.JSONObject().apply {
+                        put("model", "gpt-4o-mini")
+                        put("messages", org.json.JSONArray().apply {
+                            put(org.json.JSONObject().put("role", "system").put("content", systemInstruction))
+                            put(org.json.JSONObject().put("role", "user").put("content", prompt))
+                        })
+                    }
+                    val body = okhttp3.RequestBody.create(mediaType, requestBody.toString())
+                    val request = okhttp3.Request.Builder()
+                        .url(url)
+                        .post(body)
+                        .addHeader("Authorization", "Bearer $customKey")
+                        .build()
+                    client.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            return@withContext "API Call Failed with status ${response.code}: ${response.message}"
+                        }
+                        val bodyString = response.body?.string() ?: return@withContext "Error: Empty response body received from OpenAI."
+                        val jsonResponse = org.json.JSONObject(bodyString)
+                        val choices = jsonResponse.getJSONArray("choices")
+                        val message = choices.getJSONObject(0).getJSONObject("message")
+                        message.getString("content")
+                    }
                 }
-                val responseBodyString = response.body?.string() ?: return@withContext "Error: Empty response body received from Gemini."
-                val jsonResponse = org.json.JSONObject(responseBodyString)
-                val candidates = jsonResponse.getJSONArray("candidates")
-                val firstCandidate = candidates.getJSONObject(0)
-                val content = firstCandidate.getJSONObject("content")
-                val parts = content.getJSONArray("parts")
-                val firstPart = parts.getJSONObject(0)
-                firstPart.getString("text")
+                "CLAUDE" -> {
+                    if (customKey.isEmpty()) {
+                        return@withContext "Error: Anthropic Claude API Key is missing! Please enter your Claude API key in the System Settings menu."
+                    }
+                    val url = "https://api.anthropic.com/v1/messages"
+                    val requestBody = org.json.JSONObject().apply {
+                        put("model", "claude-3-5-haiku-20241022")
+                        put("system", systemInstruction)
+                        put("messages", org.json.JSONArray().apply {
+                            put(org.json.JSONObject().put("role", "user").put("content", prompt))
+                        })
+                        put("max_tokens", 1024)
+                    }
+                    val body = okhttp3.RequestBody.create(mediaType, requestBody.toString())
+                    val request = okhttp3.Request.Builder()
+                        .url(url)
+                        .post(body)
+                        .addHeader("x-api-key", customKey)
+                        .addHeader("anthropic-version", "2023-06-01")
+                        .build()
+                    client.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            return@withContext "API Call Failed with status ${response.code}: ${response.message}"
+                        }
+                        val bodyString = response.body?.string() ?: return@withContext "Error: Empty response body received from Claude."
+                        val jsonResponse = org.json.JSONObject(bodyString)
+                        val content = jsonResponse.getJSONArray("content")
+                        content.getJSONObject(0).getString("text")
+                    }
+                }
+                "DEEPSEEK" -> {
+                    if (customKey.isEmpty()) {
+                        return@withContext "Error: DeepSeek API Key is missing! Please enter your DeepSeek API key in the System Settings menu."
+                    }
+                    val url = "https://api.deepseek.com/v1/chat/completions"
+                    val requestBody = org.json.JSONObject().apply {
+                        put("model", "deepseek-chat")
+                        put("messages", org.json.JSONArray().apply {
+                            put(org.json.JSONObject().put("role", "system").put("content", systemInstruction))
+                            put(org.json.JSONObject().put("role", "user").put("content", prompt))
+                        })
+                    }
+                    val body = okhttp3.RequestBody.create(mediaType, requestBody.toString())
+                    val request = okhttp3.Request.Builder()
+                        .url(url)
+                        .post(body)
+                        .addHeader("Authorization", "Bearer $customKey")
+                        .build()
+                    client.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            return@withContext "API Call Failed with status ${response.code}: ${response.message}"
+                        }
+                        val bodyString = response.body?.string() ?: return@withContext "Error: Empty response body received from DeepSeek."
+                        val jsonResponse = org.json.JSONObject(bodyString)
+                        val choices = jsonResponse.getJSONArray("choices")
+                        val message = choices.getJSONObject(0).getJSONObject("message")
+                        message.getString("content")
+                    }
+                }
+                else -> { // DEFAULT TO GEMINI
+                    val apiKey = customKey.ifBlank { com.example.BuildConfig.GEMINI_API_KEY }
+                    if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
+                        return@withContext "Error: Gemini API Key is missing! Please enter your Gemini key in the settings menu or the AI Studio Secrets panel."
+                    }
+                    val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey"
+                    val requestBody = org.json.JSONObject().apply {
+                        put("contents", org.json.JSONArray().apply {
+                            put(org.json.JSONObject().put("parts", org.json.JSONArray().apply {
+                                put(org.json.JSONObject().put("text", prompt))
+                            }))
+                        })
+                        put("systemInstruction", org.json.JSONObject().put("parts", org.json.JSONArray().apply {
+                            put(org.json.JSONObject().put("text", systemInstruction))
+                        }))
+                    }
+                    val body = okhttp3.RequestBody.create(mediaType, requestBody.toString())
+                    val request = okhttp3.Request.Builder()
+                        .url(url)
+                        .post(body)
+                        .build()
+                    client.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            return@withContext "API Call Failed with status ${response.code}: ${response.message}"
+                        }
+                        val bodyString = response.body?.string() ?: return@withContext "Error: Empty response body received from Gemini."
+                        val jsonResponse = org.json.JSONObject(bodyString)
+                        val candidates = jsonResponse.getJSONArray("candidates")
+                        val content = candidates.getJSONObject(0).getJSONObject("content")
+                        val parts = content.getJSONArray("parts")
+                        parts.getJSONObject(0).getString("text")
+                    }
+                }
             }
         } catch (e: Exception) {
-            "Error executing Gemini request: ${e.message}"
+            "Error executing request for provider $provider: ${e.message}"
         }
     }
 
